@@ -1,0 +1,14 @@
+[Unit]
+Description=MAAS offline HTTP server (multi-path)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-mirror --map /iso=/root/ubuntu22.04.4 --map /tools=/root/tools
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 920">
+  <defs>
+    <style>
+      .title { font: 700 22px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", sans-serif; fill: #0f172a; }
+      .boxTitle { font: 700 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", sans-serif; fill: #0f172a; }
+      .boxText { font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Noto Sans", "Liberation Sans", sans-serif; fill: #334155; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 14; }
+      .arrow { stroke: #2563eb; stroke-width: 2.5; fill: none; }
+    </style>
+    <marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="920" fill="#f8fafc"/>
+  <text x="480" y="54" text-anchor="middle" class="title">GPU 服务器交付链路（离线 MAAS）</text>
+
+  <g transform="translate(120,90)">
+    <rect class="box" x="0" y="0" width="720" height="96"/>
+    <text class="boxTitle" x="24" y="32">1. 机器准备</text>
+    <text class="boxText" x="24" y="56">拔盘 → 无盘环境启动 → 配置 BMC 账号/密码/管理网络</text>
+  </g>
+
+  <path class="arrow" marker-end="url(#arrowHead)" d="M 480 186 L 480 220"/>
+
+  <g transform="translate(120,220)">
+    <rect class="box" x="0" y="0" width="720" height="96"/>
+    <text class="boxTitle" x="24" y="32">2. MAAS 纳管</text>
+    <text class="boxText" x="24" y="56">插回硬盘 → 批量录入/纳管 → 节点发现/分组/标签/装机策略</text>
+  </g>
+
+  <path class="arrow" marker-end="url(#arrowHead)" d="M 480 316 L 480 350"/>
+
+  <g transform="translate(120,350)">
+    <rect class="box" x="0" y="0" width="720" height="96"/>
+    <text class="boxTitle" x="24" y="32">3. 初始化</text>
+    <text class="boxText" x="24" y="56">执行清盘脚本 → 清 RAID 配置 → 清磁盘数据 → 进入可装机状态</text>
+  </g>
+
+  <path class="arrow" marker-end="url(#arrowHead)" d="M 480 446 L 480 480"/>
+
+  <g transform="translate(120,480)">
+    <rect class="box" x="0" y="0" width="720" height="96"/>
+    <text class="boxTitle" x="24" y="32">4. 批量装机</text>
+    <text class="boxText" x="24" y="56">MAAS Deploy → 下发 OS / 网络 / 存储 / 基础驱动</text>
+  </g>
+
+  <path class="arrow" marker-end="url(#arrowHead)" d="M 480 576 L 480 610"/>
+
+  <g transform="translate(120,610)">
+    <rect class="box" x="0" y="0" width="720" height="96"/>
+    <text class="boxTitle" x="24" y="32">5. 环境部署</text>
+    <text class="boxText" x="24" y="56">Ansible 批量部署驱动 / CUDA / NCCL / Docker / 监控</text>
+  </g>
+
+  <path class="arrow" marker-end="url(#arrowHead)" d="M 480 706 L 480 740"/>
+
+  <g transform="translate(120,740)">
+    <rect class="box" x="0" y="0" width="720" height="96"/>
+    <text class="boxTitle" x="24" y="32">6. 集群测试</text>
+    <text class="boxText" x="24" y="56">iperf 网络测试 → NCCL 通信测试 → 性能验证 → 问题修复</text>
+  </g>
+
+  <path class="arrow" marker-end="url(#arrowHead)" d="M 480 836 L 480 870"/>
+
+  <g transform="translate(120,870)">
+    <rect class="box" x="0" y="0" width="720" height="60"/>
+    <text class="boxTitle" x="24" y="36">7. 交付阶段</text>
+    <text class="boxText" x="168" y="36">输出验收结果 → 交付</text>
+  </g>
+</svg>
