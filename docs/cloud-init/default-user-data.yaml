@@ -1,0 +1,28 @@
+#cloud-config
+hostname: __HOSTNAME__
+disable_root: false
+ssh_pwauth: true
+users:
+  - name: ubuntu
+    gecos: Ubuntu
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) ALL
+    lock_passwd: false
+    passwd: "$6$z.B5h0vQKp0YdV4A$Tn6WB9mB7/rcXk5MZ9peGOn0m6xyGHr5kSYn5JKcxNY0KKYl8GkLSxI7cGx4NpwcL10D4RA6U0jE7kxAMJdPO0"
+chpasswd:
+  expire: false
+  users:
+    - {name: ubuntu, password: "Lexun@12#$", type: text}
+    - {name: root, password: "Lexun@12#$", type: text}
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-maas-defaults.conf
+    permissions: "0644"
+    content: |
+      PermitRootLogin yes
+      PasswordAuthentication yes
+      PubkeyAuthentication yes
+runcmd:
+  - systemctl restart ssh || systemctl restart sshd || true
+final_message: "cloud-init finished for __HOSTNAME__"
+
