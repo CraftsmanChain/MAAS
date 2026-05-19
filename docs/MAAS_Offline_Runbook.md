@@ -250,7 +250,7 @@ PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy h100 fntnkq
 4. 如果你只想临时按 tag 指定单一 root 大小，仍可用旧脚本：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-a 200G
+BOOT_SIZE=2G PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-a 200G
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-b 300G
 ```
 
