@@ -5,10 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-mirror --map /iso=/root/ubuntu22.04.4 --map /tools=/root/tools
+ExecStart=/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-offline/mirror --map /iso=/srv/maas-offline/iso --map /tools=/srv/maas-offline/tools
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
-

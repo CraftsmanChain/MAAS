@@ -5,6 +5,7 @@ set -euo pipefail
 PROFILE="${PROFILE:-admin}"
 TAG="${1:?usage: $0 tag root_size}"
 ROOT_SIZE="${2:?usage: $0 tag root_size}"
+BOOT_SIZE="${BOOT_SIZE:-2G}"
 
 size_to_bytes() {
   python3 - "$1" <<'PY'
@@ -75,7 +76,7 @@ maas "$PROFILE" tag machines "$TAG" \
       dev_id="$(pick_boot_device_id "$sysid")"
       [ -n "${dev_id:-}" ] || { echo "no boot device found for ${sysid}" >&2; exit 1; }
       maas "$PROFILE" block-device set-boot-disk "$sysid" "$dev_id" >/dev/null
-      set_layout "$sysid" "$(size_to_bytes 2G)" "$(size_to_bytes "$ROOT_SIZE")"
+      set_layout "$sysid" "$(size_to_bytes "$BOOT_SIZE")" "$(size_to_bytes "$ROOT_SIZE")"
 
       part_id="$(
         maas "$PROFILE" partitions create "$sysid" "$dev_id" \

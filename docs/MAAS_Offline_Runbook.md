@@ -9,13 +9,14 @@
 - 目标：离线环境下完成 GPU 服务器的纳管、清盘初始化、批量装机，并形成可复用的操作手册。
 - 约束：集群节点无法联网；所有依赖（ISO、apt 镜像、工具）必须由内网 HTTP 提供。
 
-## 1. 离线资源服务（单端口多路径 + systemd）
+## 1. 离线资源服务（单服务 + 单端口 + 单根目录）
 
 ### 1.1 目录规划（示例）
 
-- MAAS apt 镜像：`/srv/maas-mirror`
-- Ubuntu ISO：`/root/ubuntu22.04.4`
-- 工具分发：`/root/tools`
+- 统一根目录：`/srv/maas-offline`
+- APT 镜像目录：`/srv/maas-offline/mirror`
+- ISO 目录：`/srv/maas-offline/iso`
+- 工具目录：`/srv/maas-offline/tools`
 
 ### 1.2 用一个端口对外提供三个路径
 
@@ -26,15 +27,16 @@
 
 建议统一用 `8083`：
 
-- `http://10.161.139.136:8083/mirror/` → `/srv/maas-mirror`
-- `http://10.161.139.136:8083/iso/` → `/root/ubuntu22.04.4`
-- `http://10.161.139.136:8083/tools/` → `/root/tools`
+- `http://10.161.139.136:8083/mirror/` → `/srv/maas-offline/mirror`
+- `http://10.161.139.136:8083/iso/` → `/srv/maas-offline/iso`
+- `http://10.161.139.136:8083/tools/` → `/srv/maas-offline/tools`
 
 ### 1.3 部署为 systemd 服务
 
 在 `10.161.139.136` 上执行：
 
 ```bash
+sudo mkdir -p /srv/maas-offline/{mirror,iso,tools}
 sudo mkdir -p /opt/maas-offline
 sudo cp ./docs/maas-offline-http.py /opt/maas-offline/maas-offline-http.py
 sudo chmod +x /opt/maas-offline/maas-offline-http.py
@@ -47,11 +49,28 @@ sudo systemctl status maas-offline-http.service --no-pager
 journalctl -u maas-offline-http.service -n 100 --no-pager
 ```
 
-如果希望“一键替换掉现有 3 个 http.server + 拉起 systemd 服务”，可直接用：
+如果你之前已经把资源分散放在旧目录，可以先归并到统一根目录：
+
+```bash
+sudo mkdir -p /srv/maas-offline/{mirror,iso,tools}
+sudo rsync -a /srv/maas-mirror/ /srv/maas-offline/mirror/
+sudo rsync -a /root/ubuntu22.04.4/ /srv/maas-offline/iso/
+sudo rsync -a /root/tools/ /srv/maas-offline/tools/
+```
+
+如果希望“一键替换旧的临时 HTTP 服务 + 拉起统一的 systemd 服务”，可直接用：
 
 ```bash
 chmod +x ./docs/maas-offline-oneclick.sh
 ./docs/maas-offline-oneclick.sh
+```
+
+部署后自检：
+
+```bash
+curl -I http://10.161.139.136:8083/mirror/
+curl -I http://10.161.139.136:8083/iso/
+curl -I http://10.161.139.136:8083/tools/
 ```
 
 ### 1.4 工具分发约定
@@ -63,7 +82,7 @@ chmod +x ./docs/maas-offline-oneclick.sh
 - `sas3ircu`
 - `sas2ircu`
 
-建议统一放在 `/root/tools/` 下，通过：
+建议统一放在 `/srv/maas-offline/tools/` 下，通过：
 
 - `http://10.161.139.136:8083/tools/<文件名>` 访问
 
@@ -150,10 +169,40 @@ PROFILE=admin ./docs/scripts/maas_bulk_import_and_tag.sh ./nodes.csv
 - `/` 200G / 300G
 - `/data` 其余
 
-在 MAAS 里通常有两种来源：
+现在仓库里已经统一成“同一个策略 YAML 管 cloud-init 与 storage”：
 
-1. 机器级 Storage 配置（UI：Machines → 选机器 → Storage）
-2. 通过 CLI/API 配置 storage（`block-device set-boot-disk` / `machine set-storage-layout` / `partitions create` / `partition mount`）
+- 配置文件：[deploy-policy.yaml](./cloud-init/deploy-policy.yaml)
+- storage 应用脚本：[maas_apply_storage_policy.py](./scripts/maas_apply_storage_policy.py)
+
+系统盘分区大小直接写在 `deploy-policy.yaml` 的 `storage` 段里：
+
+```yaml
+defaults:
+  storage:
+    boot_size: 2G
+    root_size: 200G
+    data_mount: /data
+
+policies:
+  default: {}
+  h100:
+    match_tags: [h100]
+    storage:
+      root_size: 300G
+```
+
+含义：
+
+- `boot_size`：`/boot`
+- `root_size`：`/`
+- `data_mount`：剩余空间创建分区并挂到该目录，默认 `/data`
+
+在 MAAS 里底层仍然是通过 CLI/API 落地：
+
+- `block-device set-boot-disk`
+- `machine set-storage-layout`
+- `partitions create`
+- `partition mount`
 
 注意：
 
@@ -165,16 +214,40 @@ PROFILE=admin ./docs/scripts/maas_bulk_import_and_tag.sh ./nodes.csv
   - `/`：200G 或 300G
   - `/data`：剩余空间
 
-### 4.3 按 tag 自动套用存储策略（推荐）
+### 4.3 按策略 YAML 套用存储策略（推荐）
 
-准备两个标签：
+推荐直接用和 deploy 相同的策略来源：
 
-- `group-a`：`/` 200G
-- `group-b`：`/` 300G
+- 存储脚本：[maas_apply_storage_policy.py](./scripts/maas_apply_storage_policy.py)
+- 老脚本仍保留：[maas_apply_storage_policy_by_tag.sh](./scripts/maas_apply_storage_policy_by_tag.sh)
 
-使用仓库脚本按 tag 套用：
+默认规则和 deploy 一样：
 
-- [maas_apply_storage_policy_by_tag.sh](./scripts/maas_apply_storage_policy_by_tag.sh)
+- 不指定 `--policy` 时，优先按节点 `tag` 命中 `match_tags`
+- 节点没有 tag，或未命中任何策略时，自动回落到 `policies.default`
+- 显式指定 `--policy` 时，强制使用该策略
+
+推荐执行方式：
+
+1. 先 dry-run 看命中情况：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --dry-run
+```
+
+2. 按 tag 对 Ready 节点正式套存储：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --tag group-a
+```
+
+3. 对单台机器强制指定策略：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy h100 fntnkq
+```
+
+4. 如果你只想临时按 tag 指定单一 root 大小，仍可用旧脚本：
 
 ```bash
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-a 200G
@@ -194,7 +267,7 @@ PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-b 300G
 maas admin machine deploy fntnkq distro_series=jammy
 ```
 
-携带 cloud-init：
+携带 raw cloud-init：
 
 ```bash
 maas admin machine deploy fntnkq distro_series=jammy user_data="$(base64 -w0 ./user-data.yaml)"
@@ -202,28 +275,121 @@ maas admin machine deploy fntnkq distro_series=jammy user_data="$(base64 -w0 ./u
 
 仓库脚本：
 
-- [maas_deploy_one.sh](./scripts/maas_deploy_one.sh)
-- 默认 cloud-init 模板：[default-user-data.yaml](./cloud-init/default-user-data.yaml)
+- 单机部署：[maas_deploy_one.sh](./scripts/maas_deploy_one.sh)
+- 批量部署：[maas_deploy_batch.sh](./scripts/maas_deploy_batch.sh)
+- 策略渲染核心：[maas_policy_deploy.py](./scripts/maas_policy_deploy.py)
+- 默认策略 YAML：[deploy-policy.yaml](./cloud-init/deploy-policy.yaml)
+- 兼容旧方式的 raw 模板：[default-user-data.yaml](./cloud-init/default-user-data.yaml)
 
-默认模板内容已经按你的要求预置：
-
-- 用户：`ubuntu`
-- 用户密码：`Lexun@12#$`
-- `ubuntu` 在 `sudo` 组，可提升到 root
-- `root` 启用并设置同样密码
-- SSH 允许密码登录
-- SSH 允许 root 登录
-
-直接部署：
+首次使用如果系统里没有 `PyYAML`：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_deploy_one.sh fntnkq
+sudo apt-get update
+sudo apt-get install -y python3-yaml
 ```
 
-如果要换自定义 user-data：
+### 4.4.1 默认规则
+
+新的部署入口默认按以下规则工作：
+
+- 如果执行脚本时没有指定 `policy`，先读取节点当前 tag
+- 节点 tag 命中策略 YAML 的 `match_tags`，就套用对应策略
+- 节点没有配置 tag，或者 tag 没命中任何策略，自动回落到 `policies.default`
+- 如果脚本明确指定了 `policy`，则强制使用该策略，不再看节点 tag
+
+### 4.4.2 YAML 可配置项
+
+`deploy-policy.yaml` 里现在可以直接指定：
+
+- 可 sudo 的登录用户
+- 是否 `NOPASSWD`
+- 该 sudo 用户的明文密码
+- `root` 是否启用以及 `root` 密码
+- SSH 是否允许密码登录
+- SSH 是否允许 root 登录
+- SSH 可登录用户白名单 `AllowUsers`
+- sudo 用户的 `ssh_authorized_keys`
+
+示例：
+
+```yaml
+defaults:
+  profile: admin
+  distro_series: jammy
+  sudo_user:
+    name: ubuntu
+    password: "Lexun@12#$"
+    sudo_nopasswd: true
+  root:
+    enabled: true
+    password: "Lexun@12#$"
+  ssh:
+    password_authentication: true
+    permit_root_login: true
+    pubkey_authentication: true
+    allow_users: [ubuntu, root]
+
+policies:
+  default: {}
+  h100:
+    match_tags: [h100]
+    sudo_user:
+      name: h100ops
+      password: "H100Ops@123"
+      sudo_nopasswd: true
+    ssh:
+      allow_users: [h100ops, root]
+```
+
+### 4.4.3 直接使用方法
+
+0. 推荐顺序：先套 storage，再 deploy：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_deploy_one.sh fntnkq ./my-user-data.yaml
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy default fntnkq
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
+```
+
+1. 默认自动策略，单机部署：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
+```
+
+2. 强制指定策略名，不看节点 tag：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq h100
+```
+
+3. 保持兼容，直接喂你自己的 raw cloud-init：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq ./my-user-data.yaml
+```
+
+4. 按 tag 批量部署，未指定 `--policy` 时自动按节点 tag 选策略，未命中则走 `default`：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --tag group-a
+```
+
+5. 批量部署全部 `Ready` 节点：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --all-ready
+```
+
+6. 批量部署时强制所有节点都走同一个策略：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --tag group-a --policy default
+```
+
+7. 先 dry-run 看策略命中与渲染结果，再正式 deploy：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --tag h100 --dry-run
 ```
 
 ### 4.5 批量锁机（防误操作）
