@@ -55,8 +55,8 @@ def normalize_bool(value, default=False):
 def normalize_list(value):
     if value is None:
         return []
-    if isinstance(value, list):
-        return value
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
     return [value]
 
 
