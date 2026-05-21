@@ -239,26 +239,28 @@ policies:
 1. 先 dry-run 看命中情况：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --dry-run
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --all-ready --dry-run
 ```
 
 如果要把 `Failed deployment` 一并纳入批量处理，并自动先做 `release` 再套存储：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --include-failed-deployment --dry-run
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --all-ready --include-failed-deployment --dry-run
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --all-ready --include-failed-deployment
+```
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --include-failed-deployment
 ```
 
 2. 按 tag 对 Ready 节点正式套存储：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --tag group-a
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --tag group-a
 ```
 
 3. 对单台机器强制指定策略：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy h100 fntnkq
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --policy h100 fntnkq
 ```
 
 4. 如果你只想临时按 tag 指定单一 root 大小，仍可用旧脚本：
@@ -292,14 +294,14 @@ watch -n 2 'maas admin machine read fntnkq | jq -r ".status_name, .power_state"'
 回到 `Ready` 后再执行：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy default fntnkq
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --policy default fntnkq
 DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
 ```
 
 如果你想直接批量把 `Failed deployment` 节点收回来并继续套存储，也可以直接执行：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --include-failed-deployment
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --all-ready --include-failed-deployment
 ```
 
 ### 4.4 CLI 方式部署（以 fntnkq 为例）
@@ -426,7 +428,7 @@ CSV 字段说明：
 0. 推荐顺序：先套 storage，再 deploy：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy default fntnkq
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --policy default fntnkq
 DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
 ```
 
@@ -497,6 +499,7 @@ PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
 
 ```bash
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
   --all-ready --include-failed-deployment
 
 PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
@@ -508,8 +511,10 @@ PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
 
 ```bash
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
   --tag group-a --include-failed-deployment --dry-run
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
   --tag group-a --include-failed-deployment
 
 PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
