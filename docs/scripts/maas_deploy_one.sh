@@ -10,6 +10,7 @@ POLICY_SCRIPT="${SCRIPT_DIR}/maas_policy_deploy.py"
 POLICY_CONFIG="${DEPLOY_CONFIG:-${SCRIPT_DIR}/../cloud-init/deploy-policy.yaml}"
 DEFAULT_USER_DATA="${SCRIPT_DIR}/../cloud-init/default-user-data.yaml"
 SECOND_ARG="${2:-}"
+DEPLOY_CSV="${DEPLOY_CSV:-}"
 
 # Backward compatible mode: if a file path is passed, deploy the raw cloud-init file directly.
 if [ -n "$SECOND_ARG" ] && [ -f "$SECOND_ARG" ]; then
@@ -21,6 +22,9 @@ fi
 # Preferred mode: use the policy YAML and auto-match by machine tag.
 if [ -f "$POLICY_SCRIPT" ] && [ -f "$POLICY_CONFIG" ]; then
   ARGS=(--profile "$PROFILE" --series "$SERIES" --config "$POLICY_CONFIG")
+  if [ -n "$DEPLOY_CSV" ]; then
+    ARGS+=(--csv "$DEPLOY_CSV")
+  fi
   if [ -n "${DEPLOY_POLICY:-}" ]; then
     ARGS+=(--policy "$DEPLOY_POLICY")
   elif [ -n "$SECOND_ARG" ]; then

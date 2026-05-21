@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import csv
 import json
 import subprocess
 import sys
@@ -57,6 +58,21 @@ def normalize_list(value):
     return [value]
 
 
+def normalize_mac(value):
+    if not value:
+        return ""
+    text = str(value).strip().lower().replace("-", ":")
+    parts = [part.zfill(2) for part in text.split(":") if part]
+    return ":".join(parts)
+
+
+def first_non_empty(*values):
+    for value in values:
+        if value:
+            return value
+    return ""
+
+
 def machine_tags(machine):
     tags = machine.get("tag_names")
     if tags:
@@ -71,12 +87,37 @@ def machine_tags(machine):
     return names
 
 
+def machine_mac_candidates(machine):
+    candidates = set()
+    boot_if = machine.get("boot_interface") or {}
+    candidates.add(normalize_mac(boot_if.get("mac_address")))
+
+    current_config = machine.get("current_config") or {}
+    for iface in normalize_list(current_config.get("interface_set")):
+        if isinstance(iface, dict):
+            candidates.add(normalize_mac(iface.get("mac_address")))
+
+    for nic in normalize_list(machine.get("interface_set")):
+        if isinstance(nic, dict):
+            candidates.add(normalize_mac(nic.get("mac_address")))
+
+    return {item for item in candidates if item}
+
+
 def resolve_profile(config, cli_profile):
     return cli_profile or config.get("defaults", {}).get("profile") or "admin"
 
 
 def resolve_series(config, cli_series):
     return cli_series or config.get("defaults", {}).get("distro_series") or "jammy"
+
+
+def load_csv_rows(csv_path):
+    if not csv_path:
+        return []
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        return [dict(row) for row in reader]
 
 
 def policy_names_in_order(config):
@@ -129,6 +170,26 @@ def build_effective_policy(config, policy_name):
     return merged
 
 
+def resolve_csv_hostname(machine, csv_rows):
+    if not csv_rows:
+        return ""
+
+    machine_hostname = (machine.get("hostname") or "").strip().lower()
+    macs = machine_mac_candidates(machine)
+
+    for row in csv_rows:
+        row_mac = normalize_mac(row.get("pxe_mac"))
+        if row_mac and row_mac in macs and row.get("hostname"):
+            return row["hostname"].strip()
+
+    for row in csv_rows:
+        row_hostname = (row.get("hostname") or "").strip()
+        if row_hostname and row_hostname.lower() == machine_hostname:
+            return row_hostname
+
+    return ""
+
+
 def sudo_rule(nopasswd):
     return "ALL=(ALL) NOPASSWD:ALL" if normalize_bool(nopasswd) else "ALL=(ALL) ALL"
 
@@ -142,10 +203,11 @@ def ssh_permit_root(value):
     return text or "yes"
 
 
-def render_cloud_init(machine, policy):
+def render_cloud_init(machine, policy, hostname_override=""):
     sudo_user = policy.get("sudo_user") or {}
     root = policy.get("root") or {}
     ssh = policy.get("ssh") or {}
+    hostname = hostname_override or machine.get("hostname") or machine.get("fqdn") or machine.get("system_id")
 
     sudo_user_name = sudo_user.get("name", "ubuntu")
     sudo_groups = normalize_list(sudo_user.get("groups") or ["adm", "sudo"])
@@ -191,8 +253,20 @@ def render_cloud_init(machine, policy):
     if allow_users:
         ssh_lines.append("AllowUsers " + " ".join(allow_users))
 
+    hosts_text = "\n".join(
+        [
+            f"127.0.0.1 localhost {hostname}",
+            "::1 localhost ip6-localhost ip6-loopback",
+            "ff02::1 ip6-allnodes",
+            "ff02::2 ip6-allrouters",
+        ]
+    ) + "\n"
+
     cloud_init = {
-        "hostname": machine.get("hostname") or machine.get("fqdn") or machine.get("system_id"),
+        "hostname": hostname,
+        "fqdn": hostname,
+        "preserve_hostname": False,
+        "manage_etc_hosts": False,
         "disable_root": not root_enabled,
         "ssh_pwauth": normalize_bool(ssh.get("password_authentication"), True),
         "users": users,
@@ -201,11 +275,16 @@ def render_cloud_init(machine, policy):
                 "path": "/etc/ssh/sshd_config.d/99-maas-defaults.conf",
                 "permissions": "0644",
                 "content": "\n".join(ssh_lines) + "\n",
+            },
+            {
+                "path": "/etc/hosts",
+                "permissions": "0644",
+                "content": hosts_text,
             }
         ],
         "runcmd": ["systemctl restart ssh || systemctl restart sshd || true"],
         "final_message": (
-            f"cloud-init finished for {machine.get('hostname') or machine.get('system_id')} "
+            f"cloud-init finished for {hostname} "
             f"with policy={policy['policy_name']}"
         ),
     }
@@ -247,6 +326,25 @@ def deploy_machine(profile, series, machine, user_data_text, dry_run=False):
     )
 
 
+def maybe_update_maas_hostname(profile, machine, target_hostname, dry_run=False):
+    current_hostname = (machine.get("hostname") or "").strip()
+    target_hostname = (target_hostname or "").strip()
+    if not target_hostname or target_hostname == current_hostname:
+        return
+    if dry_run:
+        return
+    run_cmd(
+        [
+            "maas",
+            profile,
+            "machine",
+            "update",
+            machine["system_id"],
+            f"hostname={target_hostname}",
+        ]
+    )
+
+
 def parse_args():
     script_dir = Path(__file__).resolve().parent
     default_config = script_dir.parent / "cloud-init" / "deploy-policy.yaml"
@@ -259,6 +357,7 @@ def parse_args():
     parser.add_argument("--profile", help="MAAS CLI profile, default from YAML or admin")
     parser.add_argument("--series", help="Ubuntu distro series, default from YAML or jammy")
     parser.add_argument("--policy", help="Force policy name and bypass tag auto-match")
+    parser.add_argument("--csv", help="CSV file with hostname,pxe_mac,... used to override target hostname")
     parser.add_argument("--tag", help="Deploy all machines under a MAAS tag")
     parser.add_argument(
         "--all-ready",
@@ -277,6 +376,7 @@ def main():
     args = parse_args()
     with open(args.config, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
+    csv_rows = load_csv_rows(args.csv)
 
     profile = resolve_profile(config, args.profile)
     series = resolve_series(config, args.series)
@@ -294,16 +394,28 @@ def main():
         machine = maas_json(profile, "machine", "read", sysid)
         policy_name, reason = resolve_policy(config, machine, args.policy)
         effective_policy = build_effective_policy(config, policy_name)
-        user_data_text = render_cloud_init(machine, effective_policy)
+        hostname_override = resolve_csv_hostname(machine, csv_rows)
+        target_hostname = first_non_empty(
+            hostname_override,
+            machine.get("hostname"),
+            machine.get("fqdn"),
+            machine.get("system_id"),
+        )
+        user_data_text = render_cloud_init(
+            machine,
+            effective_policy,
+            hostname_override=hostname_override,
+        )
 
         print(
-            f"[deploy] system_id={sysid} hostname={machine.get('hostname')} "
+            f"[deploy] system_id={sysid} hostname={target_hostname} "
             f"policy={policy_name} reason={reason} tags={','.join(machine_tags(machine)) or '-'}",
             file=sys.stderr,
         )
         if args.dry_run:
             print(user_data_text)
             continue
+        maybe_update_maas_hostname(profile, machine, target_hostname, dry_run=False)
         deploy_machine(profile, series, machine, user_data_text, dry_run=False)
 
 

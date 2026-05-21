@@ -261,6 +261,27 @@ PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-b 300G
 - 如果没有显式把 MAAS 的 boot disk 改成 `sda`，它可能继续按默认选择 `nvme0n1`
 - 之前测试机把系统装到 `nvme`，就是因为这里没有正确生效
 
+### 4.3.1 部署失败后如何恢复到可重试状态
+
+如果节点当前是 `Failed deployment`，它不会出现在 `--all-ready` 里。先把状态释放回可操作状态：
+
+```bash
+maas admin machine release fntnkq comment="retry deployment" erase=false
+```
+
+观察状态直到回到 `Ready`：
+
+```bash
+watch -n 2 'maas admin machine read fntnkq | jq -r ".status_name, .power_state"'
+```
+
+回到 `Ready` 后再执行：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy default fntnkq
+DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
+```
+
 ### 4.4 CLI 方式部署（以 fntnkq 为例）
 
 ```bash
@@ -309,6 +330,8 @@ sudo apt-get install -y python3-yaml
 - SSH 是否允许 root 登录
 - SSH 可登录用户白名单 `AllowUsers`
 - sudo 用户的 `ssh_authorized_keys`
+- 部署时的主机名来源可以通过 `--csv` 或 `DEPLOY_CSV` 指定 CSV 文件，优先按 `pxe_mac` 匹配，命中后覆盖 cloud-init 里的主机名
+- `/etc/hosts` 会写成 `127.0.0.1 localhost <hostname>`，保证本机主机名解析到 `127.0.0.1`
 
 示例：
 
@@ -347,19 +370,19 @@ policies:
 
 ```bash
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy default fntnkq
-PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
+DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
 ```
 
 1. 默认自动策略，单机部署：
 
 ```bash
-PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
+DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
 ```
 
 2. 强制指定策略名，不看节点 tag：
 
 ```bash
-PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq h100
+DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq h100
 ```
 
 3. 保持兼容，直接喂你自己的 raw cloud-init：
@@ -371,25 +394,25 @@ PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq ./my-user-da
 4. 按 tag 批量部署，未指定 `--policy` 时自动按节点 tag 选策略，未命中则走 `default`：
 
 ```bash
-PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --tag group-a
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --tag group-a
 ```
 
 5. 批量部署全部 `Ready` 节点：
 
 ```bash
-PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --all-ready
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --all-ready
 ```
 
 6. 批量部署时强制所有节点都走同一个策略：
 
 ```bash
-PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --tag group-a --policy default
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --tag group-a --policy default
 ```
 
 7. 先 dry-run 看策略命中与渲染结果，再正式 deploy：
 
 ```bash
-PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --tag h100 --dry-run
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --tag h100 --dry-run
 ```
 
 ### 4.5 批量锁机（防误操作）
