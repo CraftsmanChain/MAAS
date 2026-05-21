@@ -8,9 +8,13 @@ from pathlib import Path
 
 from maas_policy_deploy import (
     build_effective_policy,
+    ensure_machine_tags,
     list_targets,
+    load_csv_rows,
     maas_json,
+    merge_machine_csv_tags,
     machine_tags,
+    resolve_csv_row,
     resolve_policy,
     resolve_profile,
 )
@@ -150,6 +154,7 @@ def parse_args():
     parser.add_argument("--config", default=str(default_config), help="Policy YAML path")
     parser.add_argument("--profile", help="MAAS CLI profile, default from YAML or admin")
     parser.add_argument("--policy", help="Force policy name and bypass tag auto-match")
+    parser.add_argument("--csv", help="CSV file with tag metadata for policy matching")
     parser.add_argument("--tag", help="Apply to all machines under a MAAS tag")
     parser.add_argument("--all-ready", action="store_true", help="Apply to all Ready nodes")
     parser.add_argument(
@@ -167,6 +172,7 @@ def main():
     args = parse_args()
     with open(args.config, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
+    csv_rows = load_csv_rows(args.csv)
 
     profile = resolve_profile(config, args.profile)
     include_statuses = {"ready"}
@@ -191,7 +197,14 @@ def main():
                 release_failed_deployment(profile, sysid)
                 machine = wait_for_ready(profile, sysid)
 
-        policy_name, reason = resolve_policy(config, machine, args.policy)
+        csv_row = {}
+        if csv_rows:
+            csv_row = resolve_csv_row(machine, csv_rows)
+            csv_tags = ensure_machine_tags(profile, sysid, csv_row, existing_machine=machine, dry_run=args.dry_run)
+            if csv_tags and not args.dry_run:
+                machine = maas_json(profile, "machine", "read", sysid)
+        machine_with_csv_tags = merge_machine_csv_tags(machine, csv_row)
+        policy_name, reason = resolve_policy(config, machine_with_csv_tags, args.policy)
         effective_policy = build_effective_policy(config, policy_name)
         storage = effective_policy.get("storage") or {}
         boot_size = storage.get("boot_size", "2G")
@@ -203,7 +216,7 @@ def main():
             f"[storage] system_id={sysid} hostname={machine.get('hostname')} "
             f"policy={policy_name} reason={reason} boot_size={boot_size} "
             f"root_size={root_size} data_mount={data_mount} "
-            f"tags={','.join(machine_tags(machine)) or '-'}"
+            f"tags={','.join(machine_tags(machine_with_csv_tags)) or '-'}"
         )
         if args.dry_run:
             continue

@@ -4,6 +4,7 @@ import argparse
 import base64
 import csv
 import json
+import re
 import subprocess
 import sys
 import time
@@ -245,6 +246,56 @@ def deep_merge_copy(base, override):
     return deep_merge(base or {}, override or {})
 
 
+def parse_csv_tags(csv_row):
+    raw_value = first_non_empty((csv_row or {}).get("tag"), (csv_row or {}).get("tags"))
+    text = str(raw_value or "").strip().strip('"')
+    if not text:
+        return []
+    tags = []
+    seen = set()
+    for item in text.replace(";", ",").split(","):
+        tag = item.strip()
+        if not tag:
+            continue
+        lowered = tag.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        tags.append(tag)
+    return tags
+
+
+def merge_machine_csv_tags(machine, csv_row):
+    merged = dict(machine or {})
+    combined = []
+    seen = set()
+    for tag in machine_tags(machine or {}) + parse_csv_tags(csv_row):
+        lowered = str(tag or "").strip().lower()
+        if not lowered or lowered in seen:
+            continue
+        seen.add(lowered)
+        combined.append(str(tag).strip())
+    merged["tag_names"] = combined
+    return merged
+
+
+def ensure_machine_tags(profile, sysid, csv_row, existing_machine=None, dry_run=False):
+    desired_tags = parse_csv_tags(csv_row)
+    if not desired_tags:
+        return []
+
+    existing_machine = existing_machine or {}
+    existing = {tag.lower() for tag in machine_tags(existing_machine)}
+    missing = [tag for tag in desired_tags if tag.lower() not in existing]
+    if not missing or dry_run:
+        return desired_tags
+
+    for tag in missing:
+        run_cmd_optional(["maas", profile, "tags", "create", f"name={tag}"])
+        run_cmd(["maas", profile, "tag", "update-nodes", tag, f"add={sysid}"])
+    return desired_tags
+
+
 def parse_25g_value(raw_value):
     text = str(raw_value or "").strip()
     if not text:
@@ -262,6 +313,24 @@ def parse_25g_value(raw_value):
     return data
 
 
+def normalize_bond_parameter_key(key):
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    normalized = re.sub(r"\s+", "_", normalized)
+    mapping = {
+        "mode": "mode",
+        "miimon": "mii-monitor-interval",
+        "mii_monitor_interval": "mii-monitor-interval",
+        "mii-monitor-interval": "mii-monitor-interval",
+        "xmit_hash_policy": "transmit-hash-policy",
+        "xmit__hash_policy": "transmit-hash-policy",
+        "transmit_hash_policy": "transmit-hash-policy",
+        "transmit-hash-policy": "transmit-hash-policy",
+        "lacp_rate": "lacp-rate",
+        "lacp-rate": "lacp-rate",
+    }
+    return mapping.get(normalized, normalized.replace("_", "-"))
+
+
 def parse_25g_mode(raw_value):
     text = str(raw_value or "").strip()
     if not text:
@@ -271,6 +340,19 @@ def parse_25g_mode(raw_value):
         if "parameters" in parsed and isinstance(parsed["parameters"], dict):
             return parsed["parameters"]
         return parsed
+    normalized_text = re.sub(r"xmit\s+_hash_policy", "xmit_hash_policy", text, flags=re.IGNORECASE)
+    token_values = {}
+    for token in normalized_text.replace(",", " ").replace(";", " ").split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        key = normalize_bond_parameter_key(key)
+        value = value.strip()
+        if not key or not value:
+            continue
+        token_values[key] = int(value) if value.isdigit() else value
+    if token_values:
+        return token_values
     return {"mode": text}
 
 
@@ -610,7 +692,11 @@ def main():
                 release_failed_deployment(profile, sysid)
                 machine = wait_for_ready(profile, sysid)
         csv_row = resolve_csv_row(machine, csv_rows)
-        policy_name, reason = resolve_policy(config, machine, args.policy)
+        csv_tags = ensure_machine_tags(profile, sysid, csv_row, existing_machine=machine, dry_run=args.dry_run)
+        if csv_tags and not args.dry_run:
+            machine = maas_json(profile, "machine", "read", sysid)
+        machine_with_csv_tags = merge_machine_csv_tags(machine, csv_row)
+        policy_name, reason = resolve_policy(config, machine_with_csv_tags, args.policy)
         effective_policy = build_effective_policy(config, policy_name)
         hostname_override = first_non_empty(
             (csv_row or {}).get("hostname"),
@@ -640,7 +726,7 @@ def main():
 
         print(
             f"[deploy] system_id={sysid} hostname={target_hostname} "
-            f"policy={policy_name} reason={reason} tags={','.join(machine_tags(machine)) or '-'}",
+            f"policy={policy_name} reason={reason} tags={','.join(machine_tags(machine_with_csv_tags)) or '-'}",
             file=sys.stderr,
         )
         if args.dry_run:

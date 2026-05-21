@@ -116,7 +116,7 @@ curl -I http://10.161.139.136:8083/tools/
 
 ### 2.3 用文件批量纳管并打标签（CLI）
 
-假设你有一个 `nodes.csv`，每行包含：
+CSV 支持最少字段：
 
 ```text
 hostname,pxe_mac,bmc_ip,bmc_user,bmc_pass,tags
@@ -124,10 +124,17 @@ node-GPU-135,52:54:00:aa:bb:cc,10.0.0.135,ADMIN,*****,"gpu,group-a"
 node-GPU-136,52:54:00:aa:bb:dd,10.0.0.136,ADMIN,*****,"gpu,group-b"
 ```
 
-建议流程：
+兼容扩展字段：
 
-1. 创建机器（纳管）
-2. 用 `tag update-nodes add=<system_id>` 打标签
+```text
+hostname,pxe_mac,bmc_ip,bmc_user,bmc_pass,node_id,sn,25g,25g_mode,tag
+```
+
+说明：
+
+- 纳管脚本只使用 `hostname,pxe_mac,bmc_ip,bmc_user,bmc_pass,tag/tags`
+- 其余字段留给后续 `storage/deploy` 脚本使用
+- `tag` 和 `tags` 都支持；多个标签用逗号分隔
 
 仓库脚本：
 
@@ -392,8 +399,8 @@ policies:
 CSV 示例：
 
 ```csv
-hostname,pxe_mac,bmc_ip,bmc_user,bmc_pass,node_id,sn,25g,25g_mode
-node-GPU-135,ea:bd:e7:57:f3:81,10.161.239.135,nxdx,Nxdx@1234,1,210235A3VWH233000246,"10.161.139.136/24,10.161.139.254","802.3ad"
+hostname,pxe_mac,bmc_ip,bmc_user,bmc_pass,node_id,sn,25g,25g_mode,tag
+node-GPU-135,ea:bd:e7:57:f3:81,10.161.239.135,nxdx,Nxdx@1234,1,210235A3VWH233000246,"10.161.139.135/24,10.161.139.254","mode=802.3ad miimon=100 xmit_hash_policy=layer3+4",A800
 ```
 
 CSV 字段说明：
@@ -404,7 +411,15 @@ CSV 字段说明：
 - `node_id`：Redfish `Systems/<node_id>` 路径，一般填 `1`
 - `sn`：可选，期望序列号；配置后会做校验，不一致直接报出
 - `25g`：可选，bond 地址配置；推荐格式 `"IP/CIDR,GATEWAY"`，例如 `"10.161.139.136/24,10.161.139.254"`
-- `25g_mode`：可选，bond 参数；可以直接写 `802.3ad`，也可以写 YAML/JSON 字典覆盖默认参数
+- `25g_mode`：可选，支持 `802.3ad`、`mode=802.3ad miimon=100 xmit_hash_policy=layer3+4`、YAML/JSON 字典
+- `tag/tags`：可选，写回 MAAS 节点标签，并参与策略匹配；多个标签用逗号分隔
+
+补充说明：
+
+- `node_id` 不是 MAAS 的节点 ID，也不要求每台机器全局唯一
+- `node_id` 只用于当前这台 BMC 的 Redfish 路径，脚本实际访问的是 `https://<bmc_ip>/redfish/v1/Systems/<node_id>`
+- 大多数厂商单机默认就是 `1`，只有实际 Redfish 路径不同才需要改
+- `sn`、`25g`、`25g_mode`、`tag/tags` 都是可选字段；不填就跳过
 
 ### 4.4.3 直接使用方法
 
@@ -461,6 +476,48 @@ PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-
 
 ```bash
 PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --all-ready --include-failed-deployment --dry-run
+```
+
+### 4.4.4 批量操作推荐顺序
+
+先 dry-run，确认 tag、策略命中、主机名、SN、25G 配置都正确：
+
+```bash
+sudo apt-get install -y python3-yaml
+
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --all-ready --include-failed-deployment --dry-run
+
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment --dry-run
+```
+
+确认 dry-run 输出无误后，正式执行：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --all-ready --include-failed-deployment
+
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment
+```
+
+如果只想按 tag 分批推进，例如先装 `group-a`：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --tag group-a --include-failed-deployment --dry-run
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --tag group-a --include-failed-deployment
+
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
+  --csv /root/maas-machines.csv \
+  --tag group-a --include-failed-deployment --dry-run
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
+  --csv /root/maas-machines.csv \
+  --tag group-a --include-failed-deployment
 ```
 
 ### 4.5 批量锁机（防误操作）
