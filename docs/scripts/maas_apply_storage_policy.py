@@ -21,7 +21,15 @@ from maas_policy_deploy import (
 
 
 def run_cmd(cmd):
-    return subprocess.run(cmd, check=True, text=True, capture_output=True)
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or "no output"
+        raise SystemExit(
+            f"command failed (exit={result.returncode}): {' '.join(cmd)}\n{detail}"
+        )
+    return result
 
 
 def parse_size_to_bytes(size_text):
