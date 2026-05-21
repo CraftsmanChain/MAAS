@@ -5,6 +5,16 @@ defaults:
     boot_size: 2G
     root_size: 200G
     data_mount: /data
+  networking:
+    bond25g:
+      bond_name: bond0
+      interfaces:
+        - ens12f0np0
+        - ens12f1np1
+      parameters:
+        mode: 802.3ad
+        mii-monitor-interval: 100
+        transmit-hash-policy: layer3+4
   sudo_user:
     name: ubuntu
     gecos: Ubuntu Admin

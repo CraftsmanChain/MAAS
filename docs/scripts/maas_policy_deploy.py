@@ -6,6 +6,7 @@ import csv
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -73,6 +74,10 @@ def first_non_empty(*values):
     return ""
 
 
+def run_cmd_optional(cmd):
+    return subprocess.run(cmd, check=False, text=True, capture_output=True)
+
+
 def machine_tags(machine):
     tags = machine.get("tag_names")
     if tags:
@@ -118,6 +123,19 @@ def load_csv_rows(csv_path):
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         return [dict(row) for row in reader]
+
+
+def parse_inline_mapping(value):
+    if not value:
+        return {}
+    text = str(value).strip()
+    if not text:
+        return {}
+    try:
+        data = yaml.safe_load(text)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def policy_names_in_order(config):
@@ -190,6 +208,26 @@ def resolve_csv_hostname(machine, csv_rows):
     return ""
 
 
+def resolve_csv_row(machine, csv_rows):
+    if not csv_rows:
+        return {}
+
+    machine_hostname = (machine.get("hostname") or "").strip().lower()
+    macs = machine_mac_candidates(machine)
+
+    for row in csv_rows:
+        row_mac = normalize_mac(row.get("pxe_mac"))
+        if row_mac and row_mac in macs:
+            return row
+
+    for row in csv_rows:
+        row_hostname = (row.get("hostname") or "").strip().lower()
+        if row_hostname and row_hostname == machine_hostname:
+            return row
+
+    return {}
+
+
 def sudo_rule(nopasswd):
     return "ALL=(ALL) NOPASSWD:ALL" if normalize_bool(nopasswd) else "ALL=(ALL) ALL"
 
@@ -203,10 +241,121 @@ def ssh_permit_root(value):
     return text or "yes"
 
 
-def render_cloud_init(machine, policy, hostname_override=""):
+def deep_merge_copy(base, override):
+    return deep_merge(base or {}, override or {})
+
+
+def parse_25g_value(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return {}
+    parsed = parse_inline_mapping(text)
+    if parsed:
+        return parsed
+
+    parts = [part.strip() for part in text.replace(";", ",").split(",") if part.strip()]
+    if not parts:
+        return {}
+    data = {"address": parts[0]}
+    if len(parts) > 1:
+        data["gateway4"] = parts[1]
+    return data
+
+
+def parse_25g_mode(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return {}
+    parsed = parse_inline_mapping(text)
+    if parsed:
+        if "parameters" in parsed and isinstance(parsed["parameters"], dict):
+            return parsed["parameters"]
+        return parsed
+    return {"mode": text}
+
+
+def build_bond25g_config(policy, csv_row):
+    raw_25g = csv_row.get("25g")
+    if not str(raw_25g or "").strip():
+        return {}
+
+    network_defaults = ((policy.get("networking") or {}).get("bond25g") or {})
+    csv_25g = parse_25g_value(raw_25g)
+    mode_override = parse_25g_mode(csv_row.get("25g_mode"))
+    merged = deep_merge_copy(network_defaults, csv_25g)
+    merged["parameters"] = deep_merge_copy(network_defaults.get("parameters"), mode_override)
+
+    interfaces = normalize_list(merged.get("interfaces"))
+    if not interfaces:
+        return {}
+
+    bond_name = merged.get("bond_name", "bond0")
+    address = merged.get("address")
+    gateway4 = merged.get("gateway4")
+    nameservers = normalize_list(merged.get("nameservers"))
+
+    ethernets = {iface: {"dhcp4": False} for iface in interfaces}
+    bond = {
+        "interfaces": interfaces,
+        "parameters": merged.get("parameters") or {},
+        "dhcp4": False,
+    }
+    if address:
+        bond["addresses"] = [address]
+    if gateway4:
+        bond["gateway4"] = gateway4
+    if nameservers:
+        bond["nameservers"] = {"addresses": nameservers}
+
+    return {
+        "version": 2,
+        "ethernets": ethernets,
+        "bonds": {bond_name: bond},
+    }
+
+
+def fetch_redfish_serial(csv_row):
+    bmc_ip = (csv_row.get("bmc_ip") or "").strip()
+    bmc_user = (csv_row.get("bmc_user") or "").strip()
+    bmc_pass = (csv_row.get("bmc_pass") or "").strip()
+    node_id = (csv_row.get("node_id") or "1").strip() or "1"
+    if not (bmc_ip and bmc_user and bmc_pass):
+        return ""
+
+    result = run_cmd_optional(
+        [
+            "curl",
+            "-sk",
+            "-u",
+            f"{bmc_user}:{bmc_pass}",
+            f"https://{bmc_ip}/redfish/v1/Systems/{node_id}",
+        ]
+    )
+    if result.returncode != 0:
+        return ""
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return ""
+    return str(payload.get("SerialNumber") or "").strip()
+
+
+def verify_serial(csv_row):
+    expected = str(csv_row.get("sn") or "").strip()
+    if not expected:
+        return True, "", ""
+    actual = fetch_redfish_serial(csv_row)
+    if not actual:
+        return False, expected, ""
+    return actual == expected, expected, actual
+
+
+def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
     sudo_user = policy.get("sudo_user") or {}
     root = policy.get("root") or {}
     ssh = policy.get("ssh") or {}
+    csv_row = csv_row or {}
     hostname = hostname_override or machine.get("hostname") or machine.get("fqdn") or machine.get("system_id")
 
     sudo_user_name = sudo_user.get("name", "ubuntu")
@@ -262,6 +411,32 @@ def render_cloud_init(machine, policy, hostname_override=""):
         ]
     ) + "\n"
 
+    write_files = [
+        {
+            "path": "/etc/ssh/sshd_config.d/99-maas-defaults.conf",
+            "permissions": "0644",
+            "content": "\n".join(ssh_lines) + "\n",
+        },
+        {
+            "path": "/etc/hosts",
+            "permissions": "0644",
+            "content": hosts_text,
+        },
+    ]
+
+    runcmd = ["systemctl restart ssh || systemctl restart sshd || true"]
+
+    bond25g = build_bond25g_config(policy, csv_row)
+    if bond25g:
+        write_files.append(
+            {
+                "path": "/etc/netplan/99-bond25g.yaml",
+                "permissions": "0644",
+                "content": yaml.safe_dump({"network": bond25g}, sort_keys=False),
+            }
+        )
+        runcmd.append("netplan generate && netplan apply || true")
+
     cloud_init = {
         "hostname": hostname,
         "fqdn": hostname,
@@ -270,19 +445,8 @@ def render_cloud_init(machine, policy, hostname_override=""):
         "disable_root": not root_enabled,
         "ssh_pwauth": normalize_bool(ssh.get("password_authentication"), True),
         "users": users,
-        "write_files": [
-            {
-                "path": "/etc/ssh/sshd_config.d/99-maas-defaults.conf",
-                "permissions": "0644",
-                "content": "\n".join(ssh_lines) + "\n",
-            },
-            {
-                "path": "/etc/hosts",
-                "permissions": "0644",
-                "content": hosts_text,
-            }
-        ],
-        "runcmd": ["systemctl restart ssh || systemctl restart sshd || true"],
+        "write_files": write_files,
+        "runcmd": runcmd,
         "final_message": (
             f"cloud-init finished for {hostname} "
             f"with policy={policy['policy_name']}"
@@ -293,18 +457,26 @@ def render_cloud_init(machine, policy, hostname_override=""):
     return "#cloud-config\n" + yaml.safe_dump(cloud_init, sort_keys=False)
 
 
-def list_targets(profile, tag=None, all_ready=False, explicit_ids=None):
+def list_targets(profile, tag=None, all_ready=False, explicit_ids=None, include_statuses=None):
+    include_statuses = {item.lower() for item in normalize_list(include_statuses)}
     if explicit_ids:
         return explicit_ids
     if tag:
         machines = maas_json(profile, "tag", "machines", tag)
+        if include_statuses:
+            return [
+                item["system_id"]
+                for item in machines
+                if (item.get("status_name") or "").lower() in include_statuses
+            ]
         return [item["system_id"] for item in machines]
     if all_ready:
         machines = maas_json(profile, "machines", "read")
         return [
             item["system_id"]
             for item in machines
-            if (item.get("status_name") or "").lower() == "ready"
+            if (item.get("status_name") or "").lower()
+            in (include_statuses or {"ready"})
         ]
     raise SystemExit("no target machines: provide system_id, --tag, or --all-ready")
 
@@ -324,6 +496,32 @@ def deploy_machine(profile, series, machine, user_data_text, dry_run=False):
             f"user_data={encoded}",
         ]
     )
+
+
+def release_failed_deployment(profile, sysid):
+    run_cmd(
+        [
+            "maas",
+            profile,
+            "machine",
+            "release",
+            sysid,
+            'comment=auto release failed deployment before retry deploy',
+            "erase=false",
+        ]
+    )
+
+
+def wait_for_ready(profile, sysid, timeout=180):
+    deadline = time.time() + timeout
+    last_status = ""
+    while time.time() < deadline:
+        machine = maas_json(profile, "machine", "read", sysid)
+        last_status = (machine.get("status_name") or "").lower()
+        if last_status == "ready":
+            return machine
+        time.sleep(3)
+    raise SystemExit(f"{sysid} did not return to Ready within {timeout}s, last_status={last_status}")
 
 
 def maybe_update_maas_hostname(profile, machine, target_hostname, dry_run=False):
@@ -360,6 +558,11 @@ def parse_args():
     parser.add_argument("--csv", help="CSV file with hostname,pxe_mac,... used to override target hostname")
     parser.add_argument("--tag", help="Deploy all machines under a MAAS tag")
     parser.add_argument(
+        "--include-failed-deployment",
+        action="store_true",
+        help="Include nodes in Failed deployment when selecting by --tag or --all-ready",
+    )
+    parser.add_argument(
         "--all-ready",
         action="store_true",
         help="Deploy all MAAS machines whose status is Ready",
@@ -380,31 +583,59 @@ def main():
 
     profile = resolve_profile(config, args.profile)
     series = resolve_series(config, args.series)
+    include_statuses = {"ready"}
+    if args.include_failed_deployment:
+        include_statuses.add("failed deployment")
     targets = list_targets(
         profile,
         tag=args.tag,
         all_ready=args.all_ready,
         explicit_ids=args.system_ids,
+        include_statuses=include_statuses if (args.tag or args.all_ready) else None,
     )
 
     if not targets:
         raise SystemExit("no machines matched the requested target selector")
 
+    failures = []
+
     for sysid in targets:
         machine = maas_json(profile, "machine", "read", sysid)
+        if (machine.get("status_name") or "").lower() == "failed deployment" and args.include_failed_deployment:
+            print(
+                f"[deploy] system_id={sysid} hostname={machine.get('hostname')} auto release from Failed deployment",
+                file=sys.stderr,
+            )
+            if not args.dry_run:
+                release_failed_deployment(profile, sysid)
+                machine = wait_for_ready(profile, sysid)
+        csv_row = resolve_csv_row(machine, csv_rows)
         policy_name, reason = resolve_policy(config, machine, args.policy)
         effective_policy = build_effective_policy(config, policy_name)
-        hostname_override = resolve_csv_hostname(machine, csv_rows)
+        hostname_override = first_non_empty(
+            (csv_row or {}).get("hostname"),
+            resolve_csv_hostname(machine, csv_rows),
+        )
         target_hostname = first_non_empty(
             hostname_override,
             machine.get("hostname"),
             machine.get("fqdn"),
             machine.get("system_id"),
         )
+        serial_ok, expected_sn, actual_sn = verify_serial(csv_row)
+        if not serial_ok:
+            message = (
+                f"[deploy] system_id={sysid} hostname={target_hostname} serial mismatch "
+                f"expected={expected_sn or '-'} actual={actual_sn or 'unavailable'}"
+            )
+            print(message, file=sys.stderr)
+            failures.append(message)
+            continue
         user_data_text = render_cloud_init(
             machine,
             effective_policy,
             hostname_override=hostname_override,
+            csv_row=csv_row,
         )
 
         print(
@@ -417,6 +648,9 @@ def main():
             continue
         maybe_update_maas_hostname(profile, machine, target_hostname, dry_run=False)
         deploy_machine(profile, series, machine, user_data_text, dry_run=False)
+
+    if failures:
+        raise SystemExit("\n".join(failures))
 
 
 if __name__ == "__main__":

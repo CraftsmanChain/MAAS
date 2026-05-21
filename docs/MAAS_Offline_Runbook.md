@@ -235,6 +235,13 @@ policies:
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --dry-run
 ```
 
+如果要把 `Failed deployment` 一并纳入批量处理，并自动先做 `release` 再套存储：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --include-failed-deployment --dry-run
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --include-failed-deployment
+```
+
 2. 按 tag 对 Ready 节点正式套存储：
 
 ```bash
@@ -280,6 +287,12 @@ watch -n 2 'maas admin machine read fntnkq | jq -r ".status_name, .power_state"'
 ```bash
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --policy default fntnkq
 DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
+```
+
+如果你想直接批量把 `Failed deployment` 节点收回来并继续套存储，也可以直接执行：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --include-failed-deployment
 ```
 
 ### 4.4 CLI 方式部署（以 fntnkq 为例）
@@ -332,6 +345,10 @@ sudo apt-get install -y python3-yaml
 - sudo 用户的 `ssh_authorized_keys`
 - 部署时的主机名来源可以通过 `--csv` 或 `DEPLOY_CSV` 指定 CSV 文件，优先按 `pxe_mac` 匹配，命中后覆盖 cloud-init 里的主机名
 - `/etc/hosts` 会写成 `127.0.0.1 localhost <hostname>`，保证本机主机名解析到 `127.0.0.1`
+- 如果 CSV 里带了 `sn`，脚本会通过 BMC Redfish 读取 `SerialNumber` 做核对；不一致会报错并跳过该节点
+- 如果 CSV 里带了 `25g`，脚本会生成 `/etc/netplan/99-bond25g.yaml`
+- 如果 CSV 里带了 `25g_mode`，会覆盖 bond 参数；如果没带，就使用策略 YAML 里的默认参数
+- `node_id` 用来拼 Redfish 路径 `https://<bmc_ip>/redfish/v1/Systems/<node_id>`，通常默认 `1`，不要求全局唯一
 
 示例：
 
@@ -339,6 +356,14 @@ sudo apt-get install -y python3-yaml
 defaults:
   profile: admin
   distro_series: jammy
+  networking:
+    bond25g:
+      bond_name: bond0
+      interfaces: [ens12f0np0, ens12f1np1]
+      parameters:
+        mode: 802.3ad
+        mii-monitor-interval: 100
+        transmit-hash-policy: layer3+4
   sudo_user:
     name: ubuntu
     password: "Lexun@12#$"
@@ -363,6 +388,23 @@ policies:
     ssh:
       allow_users: [h100ops, root]
 ```
+
+CSV 示例：
+
+```csv
+hostname,pxe_mac,bmc_ip,bmc_user,bmc_pass,node_id,sn,25g,25g_mode
+node-GPU-135,ea:bd:e7:57:f3:81,10.161.239.135,nxdx,Nxdx@1234,1,210235A3VWH233000246,"10.161.139.136/24,10.161.139.254","802.3ad"
+```
+
+CSV 字段说明：
+
+- `hostname`：部署时使用的主机名
+- `pxe_mac`：优先用于把 CSV 行匹配到 MAAS 节点
+- `bmc_ip/bmc_user/bmc_pass`：SN 校验走 Redfish 时使用
+- `node_id`：Redfish `Systems/<node_id>` 路径，一般填 `1`
+- `sn`：可选，期望序列号；配置后会做校验，不一致直接报出
+- `25g`：可选，bond 地址配置；推荐格式 `"IP/CIDR,GATEWAY"`，例如 `"10.161.139.136/24,10.161.139.254"`
+- `25g_mode`：可选，bond 参数；可以直接写 `802.3ad`，也可以写 YAML/JSON 字典覆盖默认参数
 
 ### 4.4.3 直接使用方法
 
@@ -413,6 +455,12 @@ PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-
 
 ```bash
 PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --tag h100 --dry-run
+```
+
+8. 把 `Failed deployment` 节点也纳入 deploy 目标选择：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --all-ready --include-failed-deployment --dry-run
 ```
 
 ### 4.5 批量锁机（防误操作）

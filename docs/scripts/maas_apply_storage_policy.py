@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import time
 import subprocess
 from pathlib import Path
 
@@ -112,6 +113,32 @@ def ensure_data_partition(profile, sysid, dev_id, mount_point):
     )
 
 
+def release_failed_deployment(profile, sysid):
+    run_cmd(
+        [
+            "maas",
+            profile,
+            "machine",
+            "release",
+            sysid,
+            'comment=auto release failed deployment before reapply storage',
+            "erase=false",
+        ]
+    )
+
+
+def wait_for_ready(profile, sysid, timeout=180):
+    deadline = time.time() + timeout
+    last_status = ""
+    while time.time() < deadline:
+        machine = maas_json(profile, "machine", "read", sysid)
+        last_status = (machine.get("status_name") or "").lower()
+        if last_status == "ready":
+            return machine
+        time.sleep(3)
+    raise SystemExit(f"{sysid} did not return to Ready within {timeout}s, last_status={last_status}")
+
+
 def parse_args():
     script_dir = Path(__file__).resolve().parent
     default_config = script_dir.parent / "cloud-init" / "deploy-policy.yaml"
@@ -125,6 +152,11 @@ def parse_args():
     parser.add_argument("--policy", help="Force policy name and bypass tag auto-match")
     parser.add_argument("--tag", help="Apply to all machines under a MAAS tag")
     parser.add_argument("--all-ready", action="store_true", help="Apply to all Ready nodes")
+    parser.add_argument(
+        "--include-failed-deployment",
+        action="store_true",
+        help="Include nodes in Failed deployment and auto-release them before applying storage",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Only print resolved storage policy")
     return parser.parse_args()
 
@@ -137,17 +169,28 @@ def main():
         config = yaml.safe_load(handle) or {}
 
     profile = resolve_profile(config, args.profile)
+    include_statuses = {"ready"}
+    if args.include_failed_deployment:
+        include_statuses.add("failed deployment")
     targets = list_targets(
         profile,
         tag=args.tag,
         all_ready=args.all_ready,
         explicit_ids=args.system_ids,
+        include_statuses=include_statuses if (args.tag or args.all_ready) else None,
     )
     if not targets:
         raise SystemExit("no machines matched the requested target selector")
 
     for sysid in targets:
         machine = maas_json(profile, "machine", "read", sysid)
+        status_name = (machine.get("status_name") or "").lower()
+        if status_name == "failed deployment" and args.include_failed_deployment:
+            print(f"[storage] system_id={sysid} hostname={machine.get('hostname')} auto release from Failed deployment")
+            if not args.dry_run:
+                release_failed_deployment(profile, sysid)
+                machine = wait_for_ready(profile, sysid)
+
         policy_name, reason = resolve_policy(config, machine, args.policy)
         effective_policy = build_effective_policy(config, policy_name)
         storage = effective_policy.get("storage") or {}
