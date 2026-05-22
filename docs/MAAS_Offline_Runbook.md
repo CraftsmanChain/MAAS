@@ -8,6 +8,7 @@
 
 - 目标：离线环境下完成 GPU 服务器的纳管、清盘初始化、批量装机，并形成可复用的操作手册。
 - 约束：集群节点无法联网；所有依赖（ISO、apt 镜像、工具）必须由内网 HTTP 提供。
+- 结论：全新离线部署不能只准备 ISO；至少要同时准备 `mirror`、`iso`、`tools` 三类资源后，MAAS commissioning 和 deploy 才能稳定完成。
 
 ## 1. 离线资源服务（单服务 + 单端口 + 单根目录）
 
@@ -274,6 +275,8 @@ PROFILE=admin ./docs/scripts/maas_bulk_import_and_tag.sh ./nodes.csv
   - 识别 RAID 控制器类型并自动选择工具
   - SSD 系统盘：每块 SSD 创建单盘 `RAID0 VD`，第一块命名 `ssd01` 并设为 BootDrive
   - 全盘清理：对系统可见盘执行 `wipefs/sgdisk/blkdiscard`（包含 NVMe）
+- 依赖：RAID 工具必须统一从 `http://10.161.139.136:8083/tools/` 下载；不要再写成 `http://10.161.139.136:8083/<文件名>`，否则 `curl -f` 会直接 `404` 并返回 `exit 22`
+- 现场经验：如果 `Testing` 长时间停在 `Powering on` 且 `rackd` 没看到新的 PXE/TFTP 请求，可手工执行一次 `power off -> bootdev pxe options=efiboot -> power on`，把节点强制推回测试环境
 
 ## 4. 批量装机（Deploy）
 

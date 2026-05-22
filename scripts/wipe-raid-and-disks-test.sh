@@ -11,7 +11,8 @@
 set -euxo pipefail
 exec > >(tee /tmp/wipe-raid-and-disks.log) 2>&1
 
-BASE_URL="http://10.161.139.136:8083"
+# RAID 工具实际由统一离线服务的 /tools 路径提供。
+BASE_URL="http://10.161.139.136:8083/tools"
 WORKDIR="/tmp/raid-tools"
 mkdir -p "$WORKDIR"
 
