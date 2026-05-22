@@ -7,9 +7,11 @@ OFFLINE_ROOT=/srv/maas-offline
 MIRROR_DIR="${OFFLINE_ROOT}/mirror"
 ISO_DIR="${OFFLINE_ROOT}/iso"
 TOOLS_DIR="${OFFLINE_ROOT}/tools"
+LLDPD_REPO_DIR="${TOOLS_DIR}/lldpd-mini-repo"
 LEGACY_MIRROR_DIR=/srv/maas-mirror
 LEGACY_ISO_DIR=/root/ubuntu22.04.4
 LEGACY_TOOLS_DIR=/root/tools
+LEGACY_LLDPD_REPO_DIR=/srv/lldpd-mini-repo
 SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/maas-offline-http.py"
 SCRIPT_DST_DIR=/opt/maas-offline
 SCRIPT_DST="${SCRIPT_DST_DIR}/maas-offline-http.py"
@@ -48,10 +50,11 @@ repair_lowlatency_boot_artifacts() {
 }
 
 sudo mkdir -p "$SCRIPT_DST_DIR"
-sudo mkdir -p "$MIRROR_DIR" "$ISO_DIR" "$TOOLS_DIR"
+sudo mkdir -p "$MIRROR_DIR" "$ISO_DIR" "$TOOLS_DIR" "$LLDPD_REPO_DIR"
 sync_dir_if_exists "$LEGACY_MIRROR_DIR" "$MIRROR_DIR"
 sync_dir_if_exists "$LEGACY_ISO_DIR" "$ISO_DIR"
 sync_dir_if_exists "$LEGACY_TOOLS_DIR" "$TOOLS_DIR"
+sync_dir_if_exists "$LEGACY_LLDPD_REPO_DIR" "$LLDPD_REPO_DIR"
 repair_lowlatency_boot_artifacts
 
 sudo cp "$SCRIPT_SRC" "$SCRIPT_DST"
@@ -61,7 +64,10 @@ sudo cp "$UNIT_SRC" "$UNIT_DST"
 sudo pkill -f "python3 -m http.server 8081" || true
 sudo pkill -f "python3 -m http.server 8082" || true
 sudo pkill -f "python3 -m http.server 8083" || true
+sudo pkill -f "python3 -m http.server 8899" || true
 sudo pkill -f "/opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port ${PORT}" || true
+sudo systemctl disable --now maas-ubuntu-apt-http.service 2>/dev/null || true
+sudo systemctl disable --now lldpd-mini-repo.service 2>/dev/null || true
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now maas-offline-http.service
@@ -77,4 +83,9 @@ urls:
   http://<server-ip>:${PORT}/mirror/
   http://<server-ip>:${PORT}/iso/
   http://<server-ip>:${PORT}/tools/
+  http://<server-ip>:${PORT}/tools/lldpd-mini-repo/
+
+maas_package_repo_examples:
+  maas admin package-repository update 1 url=http://<server-ip>:${PORT}/iso
+  maas admin package-repository update 3 url=http://<server-ip>:${PORT}/tools/lldpd-mini-repo
 EOF

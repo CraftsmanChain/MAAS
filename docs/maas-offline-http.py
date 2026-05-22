@@ -34,6 +34,9 @@ class MappedHandler(http.server.SimpleHTTPRequestHandler):
 
     def translate_path(self, path):
         raw = urllib.parse.urlparse(path).path
+        # APT may request deb filenames with URL-encoded characters such as
+        # "%3a" and "%2b"; decode them before mapping to the filesystem.
+        raw = urllib.parse.unquote(raw)
         raw = posixpath.normpath(raw)
         if not raw.startswith("/"):
             raw = "/" + raw
@@ -99,4 +102,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

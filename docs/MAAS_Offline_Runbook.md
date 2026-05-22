@@ -18,18 +18,19 @@
 - ISO 目录：`/srv/maas-offline/iso`
 - 工具目录：`/srv/maas-offline/tools`
 
-### 1.2 用一个端口对外提供三个路径
+### 1.2 用一个端口对外提供三类资源
 
 仓库内提供了一个轻量的多路径静态文件服务脚本：
 
 - 服务脚本：[maas-offline-http.py](./maas-offline-http.py)
 - systemd 单元样例：[maas-offline-http.service](./systemd/maas-offline-http.service)
 
-建议统一用 `8083`：
+建议统一用 `8083`，并把 commissioning 依赖的 APT 仓库也一起收口到这个服务：
 
 - `http://10.161.139.136:8083/mirror/` → `/srv/maas-offline/mirror`
 - `http://10.161.139.136:8083/iso/` → `/srv/maas-offline/iso`
 - `http://10.161.139.136:8083/tools/` → `/srv/maas-offline/tools`
+- `http://10.161.139.136:8083/tools/lldpd-mini-repo/` → `/srv/maas-offline/tools/lldpd-mini-repo`
 
 ### 1.3 部署为 systemd 服务
 
@@ -56,6 +57,7 @@ sudo mkdir -p /srv/maas-offline/{mirror,iso,tools}
 sudo rsync -a /srv/maas-mirror/ /srv/maas-offline/mirror/
 sudo rsync -a /root/ubuntu22.04.4/ /srv/maas-offline/iso/
 sudo rsync -a /root/tools/ /srv/maas-offline/tools/
+sudo rsync -a /srv/lldpd-mini-repo/ /srv/maas-offline/tools/lldpd-mini-repo/
 ```
 
 如果希望“一键替换旧的临时 HTTP 服务 + 拉起统一的 systemd 服务”，可直接用：
@@ -65,12 +67,121 @@ chmod +x ./docs/maas-offline-oneclick.sh
 ./docs/maas-offline-oneclick.sh
 ```
 
+该脚本会做这些事：
+
+- 统一使用 `/srv/maas-offline/{mirror,iso,tools}`
+- 自动从旧目录 `/srv/maas-mirror`、`/root/ubuntu22.04.4`、`/root/tools` 迁移文件
+- 自动把 `lldpd` 离线仓库归并到 `/srv/maas-offline/tools/lldpd-mini-repo`
+- 停掉旧的 `python3 -m http.server 8081/8082/8083/8899`
+- 重新安装并启动 `maas-offline-http.service`
+- 自动补齐 `ephemeral-v3` 下缺失的 `lowlatency/boot-kernel` 和 `lowlatency/boot-initrd`
+
 部署后自检：
 
 ```bash
 curl -I http://10.161.139.136:8083/mirror/
 curl -I http://10.161.139.136:8083/iso/
 curl -I http://10.161.139.136:8083/tools/
+```
+
+进一步确认 systemd 实际映射目录：
+
+```bash
+systemctl cat maas-offline-http
+systemctl status maas-offline-http --no-pager
+```
+
+`ExecStart` 必须是：
+
+```text
+/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-offline/mirror --map /iso=/srv/maas-offline/iso --map /tools=/srv/maas-offline/tools
+```
+
+如果之前 MAAS boot-source 还指向旧地址 `8081`，要同步改成：
+
+```bash
+maas admin boot-source update 1 \
+  url=http://10.161.139.136:8083/mirror/ephemeral-v3/stable/ \
+  keyring_filename=/usr/share/keyrings/ubuntu-cloudimage-keyring.gpg
+maas admin boot-resources import
+sudo systemctl restart maas-rackd maas-regiond
+```
+
+commissioning 使用的包仓库也要同步改到 `8083`，避免节点在 `cloud-init` 或 `20-maas-01-install-lldpd` 阶段因为旧的 `8082/8899` 进程缺失而失败：
+
+```bash
+maas admin package-repository update 1 \
+  url=http://10.161.139.136:8083/iso
+
+maas admin package-repository update 3 \
+  url=http://10.161.139.136:8083/tools/lldpd-mini-repo
+
+maas admin package-repositories read | jq '.[] | {id,name,url,enabled}'
+```
+
+如果 `lldpd-mini-repo` 是自建仓库，必须补 `InRelease`/`Release.gpg` 并把公钥写入 MAAS；否则 commissioning 节点即使能访问该 URL，也可能仍然报：
+
+- `E: Unable to locate package lldpd`
+- `maas-capture-lldpd failed`
+
+推荐做法：
+
+```bash
+export GNUPGHOME=/root/.gnupg-maas-repo
+mkdir -p "$GNUPGHOME"
+chmod 700 "$GNUPGHOME"
+
+cat >/tmp/maas-repo-key.batch <<'EOF'
+%no-protection
+Key-Type: RSA
+Key-Length: 4096
+Name-Real: MAAS Offline Repo Signing
+Name-Email: maas-offline@example.local
+Expire-Date: 0
+%commit
+EOF
+
+gpg --batch --generate-key /tmp/maas-repo-key.batch
+gpg --batch --armor --export 'MAAS Offline Repo Signing' >/tmp/maas-offline-repo-signing.asc
+
+gpg --batch --yes --default-key 'MAAS Offline Repo Signing' \
+  --detach-sign --armor \
+  -o /srv/maas-offline/tools/lldpd-mini-repo/dists/jammy/Release.gpg \
+  /srv/maas-offline/tools/lldpd-mini-repo/dists/jammy/Release
+
+gpg --batch --yes --default-key 'MAAS Offline Repo Signing' \
+  --clearsign \
+  -o /srv/maas-offline/tools/lldpd-mini-repo/dists/jammy/InRelease \
+  /srv/maas-offline/tools/lldpd-mini-repo/dists/jammy/Release
+
+maas admin package-repository update 3 \
+  key="$(cat /tmp/maas-offline-repo-signing.asc)"
+```
+
+验收标准：
+
+- `main_archive` 必须是 `http://10.161.139.136:8083/iso`
+- `lldpd-mini` 必须是 `http://10.161.139.136:8083/tools/lldpd-mini-repo`
+- 不再保留 `8082` / `8899` 的单独 `python3 -m http.server` 进程
+- `maas-ubuntu-apt-http.service` 和 `lldpd-mini-repo.service` 必须停用
+- `lldpd-mini` 仓库必须存在 `InRelease` 或 `Release.gpg`，且 preseed 中能看到对应 `key`
+
+自检命令：
+
+```bash
+curl -I http://10.161.139.136:8083/iso/dists/jammy/Release
+curl -I http://10.161.139.136:8083/tools/lldpd-mini-repo/dists/jammy/Release
+curl -I http://10.161.139.136:8083/tools/lldpd-mini-repo/dists/jammy/InRelease
+ss -ltnp | egrep ':8082|:8899|:8083'
+systemctl list-unit-files | egrep 'maas-offline-http|maas-ubuntu-apt-http|lldpd-mini-repo'
+```
+
+如果要验证 `simplestreams` 启动文件是否齐全，直接检查：
+
+```bash
+curl -I http://10.161.139.136:8083/mirror/ephemeral-v3/stable/streams/v1/index.sjson
+curl -I http://10.161.139.136:8083/mirror/ephemeral-v3/stable/jammy/amd64/20260430/ga-22.04/generic/boot-kernel
+curl -I http://10.161.139.136:8083/mirror/ephemeral-v3/stable/jammy/amd64/20260430/ga-22.04/lowlatency/boot-kernel
 ```
 
 ### 1.4 工具分发约定
@@ -149,6 +260,11 @@ PROFILE=admin ./docs/scripts/maas_bulk_import_and_tag.sh ./nodes.csv
 ### 3.1 为什么用 testing 脚本
 
 - commissioning 内置脚本不可改；离线环境中容易因默认脚本安装包失败导致 `Failed commissioning`
+- 如果离线仓库里缺 `lldpd`，会直接触发：
+  - `20-maas-01-install-lldpd failed installing dependencies`
+  - `maas-capture-lldpd failed`
+- `commissioning_scripts=none` 也不会跳过 MAAS 默认内建 commissioning 脚本
+- MAAS 默认脚本不能通过 `node-script update ... script@=...` 直接改成 `skip/no-op`；CLI 会返回 `Not allowed to change on default scripts.`
 - 将“清盘/清 RAID”作为 `testing` 脚本执行，可规避 commissioning 默认脚本链路
 
 ### 3.2 清盘脚本（默认策略）
@@ -247,8 +363,6 @@ PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machi
 ```bash
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --all-ready --include-failed-deployment --dry-run
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --all-ready --include-failed-deployment
-```
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --all-ready --include-failed-deployment
 ```
 
 2. 按 tag 对 Ready 节点正式套存储：
