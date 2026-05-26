@@ -404,6 +404,26 @@ def build_bond25g_config(policy, csv_row):
     }
 
 
+def should_apply_bond_on_first_boot(policy, csv_row):
+    networking = policy.get("networking") or {}
+    raw_value = first_non_empty(
+        (csv_row or {}).get("25g_apply"),
+        networking.get("apply_on_first_boot"),
+    )
+    return normalize_bool(raw_value, default=True)
+
+
+def predictable_ifname_kernel_cmdline(policy):
+    networking = policy.get("networking") or {}
+    enabled = networking.get("predictable_interface_names")
+    if not normalize_bool(enabled, default=False):
+        return ""
+    return str(
+        networking.get("predictable_interface_kernel_cmdline")
+        or "net.ifnames=1 biosdevname=0"
+    ).strip()
+
+
 def fetch_redfish_serial(csv_row):
     bmc_ip = (csv_row.get("bmc_ip") or "").strip()
     bmc_user = (csv_row.get("bmc_user") or "").strip()
@@ -516,6 +536,21 @@ def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
 
     runcmd = ["systemctl restart ssh || systemctl restart sshd || true"]
 
+    predictable_ifnames_cmdline = predictable_ifname_kernel_cmdline(policy)
+    if predictable_ifnames_cmdline:
+        write_files.append(
+            {
+                "path": "/etc/default/grub.d/90-maas-predictable-ifnames.cfg",
+                "permissions": "0644",
+                "content": (
+                    "GRUB_CMDLINE_LINUX_DEFAULT="
+                    f"\"${{GRUB_CMDLINE_LINUX_DEFAULT:+$GRUB_CMDLINE_LINUX_DEFAULT }}"
+                    f"{predictable_ifnames_cmdline}\"\n"
+                ),
+            }
+        )
+        runcmd.append("update-grub || true")
+
     bond25g = build_bond25g_config(policy, csv_row)
     if bond25g:
         write_files.append(
@@ -525,7 +560,8 @@ def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
                 "content": yaml.safe_dump({"network": bond25g}, sort_keys=False),
             }
         )
-        runcmd.append("netplan generate && netplan apply || true")
+        if should_apply_bond_on_first_boot(policy, csv_row):
+            runcmd.append("netplan generate && netplan apply || true")
 
     cloud_init = {
         "hostname": hostname,
@@ -544,6 +580,7 @@ def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
     }
     if chpasswd_users:
         cloud_init["chpasswd"] = {"expire": False, "users": chpasswd_users}
+    cloud_init = deep_merge(cloud_init, policy.get("cloud_init") or {})
     return "#cloud-config\n" + yaml.safe_dump(cloud_init, sort_keys=False)
 
 

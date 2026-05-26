@@ -135,19 +135,30 @@ configure_with_storcli() {
   echo "==== STORCLI CTRL $ctrl SSDS ===="
   printf '%s\n' "${ssds[@]:-}"
 
-  local idx=0
   local created=0
   local boot_vd=""
+  local raid_level=""
+  local drives_csv=""
 
-  for drive in "${ssds[@]}"; do
-    [ -n "$drive" ] || continue
-    local name
-    name="$(printf 'ssd%02d' "$((idx + 1))")"
-    if "$STORCLI" "/c$ctrl" add vd r0 name="$name" drives="$drive"; then
-      created=$((created + 1))
+  if [ "${#ssds[@]}" -eq 1 ]; then
+    raid_level="r0"
+    drives_csv="${ssds[0]}"
+  elif [ "${#ssds[@]}" -ge 2 ]; then
+    # Follow the delivery default: 2 SSDs make one boot RAID1.
+    raid_level="r1"
+    drives_csv="${ssds[0]},${ssds[1]}"
+    if [ "${#ssds[@]}" -gt 2 ]; then
+      echo "WARN: more than 2 SSDs detected on controller $ctrl, using first two for boot RAID1: $drives_csv"
     fi
-    idx=$((idx + 1))
-  done
+  fi
+
+  if [ -n "$raid_level" ] && [ -n "$drives_csv" ]; then
+    if "$STORCLI" "/c$ctrl" add vd "$raid_level" name="ssd01" drives="$drives_csv"; then
+      created=1
+    fi
+  else
+    echo "WARN: no eligible SSDs detected on controller $ctrl, skip VD creation"
+  fi
 
   boot_vd="$(storcli_boot_vd_by_name "$ctrl" "ssd01" || true)"
   if [ -n "$boot_vd" ]; then
@@ -218,17 +229,29 @@ configure_with_megacli() {
   echo "==== MEGACLI CTRL $ctrl SSDS ===="
   printf '%s\n' "${ssds[@]:-}"
 
-  local idx=0
   local created=0
   local boot_ld=""
+  local raid_level=""
+  local drives_csv=""
 
-  for drive in "${ssds[@]}"; do
-    [ -n "$drive" ] || continue
-    if "$MEGACLI" -CfgLdAdd -r0["$drive"] WT NORA Direct -strpsz64 -a"$ctrl"; then
-      created=$((created + 1))
+  if [ "${#ssds[@]}" -eq 1 ]; then
+    raid_level="r0"
+    drives_csv="${ssds[0]}"
+  elif [ "${#ssds[@]}" -ge 2 ]; then
+    raid_level="r1"
+    drives_csv="${ssds[0]},${ssds[1]}"
+    if [ "${#ssds[@]}" -gt 2 ]; then
+      echo "WARN: more than 2 SSDs detected on controller $ctrl, using first two for boot RAID1: $drives_csv"
     fi
-    idx=$((idx + 1))
-  done
+  fi
+
+  if [ -n "$raid_level" ] && [ -n "$drives_csv" ]; then
+    if "$MEGACLI" -CfgLdAdd -"${raid_level}"["$drives_csv"] WT NORA Direct -strpsz64 -a"$ctrl"; then
+      created=1
+    fi
+  else
+    echo "WARN: no eligible SSDs detected on controller $ctrl, skip LD creation"
+  fi
 
   boot_ld="$(megacli_boot_ld_by_name "$ctrl" "ssd01" || true)"
   if [ -n "$boot_ld" ]; then
@@ -283,18 +306,25 @@ configure_with_sasircu() {
   echo "==== SASIRCU CTRL $ctrl SSDS ===="
   printf '%s\n' "${ssds[@]:-}"
 
-  local idx=0
   local created=0
+  local raid_level=""
 
-  for drive in "${ssds[@]}"; do
-    [ -n "$drive" ] || continue
-    local name
-    name="$(printf 'ssd%02d' "$((idx + 1))")"
-    if "$bin" "$ctrl" CREATE RAID0 MAX "$drive" "$name" NOPROMPT; then
-      created=$((created + 1))
+  if [ "${#ssds[@]}" -eq 1 ]; then
+    raid_level="RAID0"
+    if "$bin" "$ctrl" CREATE "$raid_level" MAX "${ssds[0]}" ssd01 NOPROMPT; then
+      created=1
     fi
-    idx=$((idx + 1))
-  done
+  elif [ "${#ssds[@]}" -ge 2 ]; then
+    raid_level="RAID1"
+    if [ "${#ssds[@]}" -gt 2 ]; then
+      echo "WARN: more than 2 SSDs detected on controller $ctrl, using first two for boot RAID1: ${ssds[0]},${ssds[1]}"
+    fi
+    if "$bin" "$ctrl" CREATE "$raid_level" MAX "${ssds[0]}" "${ssds[1]}" ssd01 NOPROMPT; then
+      created=1
+    fi
+  else
+    echo "WARN: no eligible SSDs detected on controller $ctrl, skip RAID creation"
+  fi
 
   echo "==== SASIRCU CTRL $ctrl CREATED $created ===="
   "$bin" "$ctrl" DISPLAY || true

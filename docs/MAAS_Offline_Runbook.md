@@ -10,6 +10,25 @@
 - 约束：集群节点无法联网；所有依赖（ISO、apt 镜像、工具）必须由内网 HTTP 提供。
 - 结论：全新离线部署不能只准备 ISO；至少要同时准备 `mirror`、`iso`、`tools` 三类资源后，MAAS commissioning 和 deploy 才能稳定完成。
 
+### 0.1 当前“一键离线部署”的能力边界
+
+当前仓库已经可以做到“条件式一键部署”，但不是“裸机零准备全自动”：
+
+- 可以一键完成：
+  - 统一离线资源目录归并
+  - 多路径离线 HTTP 服务安装与拉起
+  - `boot-source` / 包仓库 / storage / deploy / curtin 登录模板 的标准化落地
+  - 基于 CSV 的批量纳管、打标签、套盘、批量部署
+- 还不能完全替代的前置准备：
+  - MAAS 控制机操作系统安装
+  - `maas-region` / `maas-rack` 软件包安装与初始化
+  - 网络、VLAN、DHCP、路由、交换机连通性规划
+  - BMC/IPMI 凭据采集
+  - 节点 BIOS/UEFI 与 PXE 启动策略校准
+- 因此更准确的说法是：
+  - 如果 MAAS 主机已经装好，且离线资源与 CSV/BMC 数据已备齐，本仓库可以把新环境的离线交付流程压缩到“一套资源准备 + 一套标准命令链”
+  - 如果是从一台裸机开始新建整个 MAAS 环境，仍需要先把基础 OS、MAAS 软件和网络条件准备好
+
 ## 1. 离线资源服务（单服务 + 单端口 + 单根目录）
 
 ### 1.1 目录规划（示例）
@@ -198,6 +217,88 @@ curl -I http://10.161.139.136:8083/mirror/ephemeral-v3/stable/jammy/amd64/202604
 
 - `http://10.161.139.136:8083/tools/<文件名>` 访问
 
+### 1.5 全新离线环境资源清单
+
+如果要在全新的离线环境里复现当前这套自动化交付，至少要提前准备这些资源：
+
+- MAAS 控制机基础环境
+  - Ubuntu 22.04 主机
+  - 已安装并初始化的 `maas-region-api` / `maas-rack-controller`
+  - 可用的 `admin` CLI profile/API 凭据
+- Boot 资源
+  - `simplestreams` mirror，至少包含 `ephemeral-v3/stable`
+  - Jammy 对应的 `boot-kernel` / `boot-initrd` / `squashfs`
+  - 如使用 `lowlatency` 路径，需补齐对应启动文件
+- APT/ISO 资源
+  - Ubuntu Jammy 离线仓库，能作为 `main_archive`
+  - 挂在 `/srv/maas-offline/iso`
+- 工具资源
+  - RAID 工具：`storcli`、`MegaCli64`、`sas3ircu`、`sas2ircu`
+  - 其他 commissioning/deploy 所需离线文件
+  - `lldpd-mini-repo`，且带 `InRelease` 或 `Release.gpg`
+- 配置与清单
+  - `deploy-policy.yaml`
+  - `deploy-policy-install-safe.yaml`
+  - `maas-machines.csv`
+  - BMC 凭据、序列号、PXE MAC、可选 25G/bond 配置
+- 网络与硬件前置条件
+  - 管理网二层打通
+  - PXE/DHCP/TFTP/HTTP 可达
+  - 机器 BIOS 已设为 UEFI，本地盘优先，PXE 仅靠一次性 Boot Override
+
+### 1.6 全新离线环境最短落地顺序
+
+如果上述资源已经备齐，推荐按这条最短路径拉起新环境：
+
+1. 拉起统一离线 HTTP 服务：
+
+```bash
+chmod +x ./docs/maas-offline-oneclick.sh
+./docs/maas-offline-oneclick.sh
+```
+
+2. 更新 MAAS boot-source 与 package repositories：
+
+```bash
+maas admin boot-source update 1 \
+  url=http://<server-ip>:8083/mirror/ephemeral-v3/stable/ \
+  keyring_filename=/usr/share/keyrings/ubuntu-cloudimage-keyring.gpg
+maas admin boot-resources import
+
+maas admin package-repository update 1 url=http://<server-ip>:8083/iso
+maas admin package-repository update 3 url=http://<server-ip>:8083/tools/lldpd-mini-repo
+```
+
+3. 导入节点并打标签：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_bulk_import_and_tag.sh /root/maas-machines.csv
+```
+
+4. 安装 curtin 登录模板：
+
+```bash
+sudo python3 ./docs/scripts/maas_install_curtin_login_template.py \
+  --config ./docs/cloud-init/deploy-policy.yaml \
+  --csv /root/maas-machines.csv
+```
+
+5. 套用存储策略：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment
+```
+
+6. 批量部署：
+
+```bash
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment
+```
+
 ## 2. MAAS 纳管（节点批量录入/发现/标签/分组）
 
 ### 2.1 两种纳管模式
@@ -267,6 +368,7 @@ PROFILE=admin ./docs/scripts/maas_bulk_import_and_tag.sh ./nodes.csv
 - `commissioning_scripts=none` 也不会跳过 MAAS 默认内建 commissioning 脚本
 - MAAS 默认脚本不能通过 `node-script update ... script@=...` 直接改成 `skip/no-op`；CLI 会返回 `Not allowed to change on default scripts.`
 - 将“清盘/清 RAID”作为 `testing` 脚本执行，可规避 commissioning 默认脚本链路
+- `inspect-installed-system-test` 已从本地仓库移除，不再作为标准测试链路的一部分；当前保留的标准 testing 脚本只有 `wipe-raid-and-disks-test`
 
 ### 3.2 清盘脚本（默认策略）
 
@@ -319,6 +421,7 @@ policies:
 
 含义：
 
+- `efi_size`：`/boot/efi`
 - `boot_size`：`/boot`
 - `root_size`：`/`
 - `data_mount`：剩余空间创建分区并挂到该目录，默认 `/data`
@@ -332,19 +435,20 @@ policies:
 
 注意：
 
-- MAAS 在 UEFI 模式下会自动创建一个约 `512MiB` 的 `EFI System Partition` 挂载到 `/boot/efi`
-- `boot_size=2G` 对应的是 `/boot` 分区，不是 `/boot/efi`
-- 所以你要的合理默认应理解为：
-  - `/boot/efi`：MAAS 自动创建（约 512MiB）
-  - `/boot`：2G
-  - `/`：200G 或 300G
+- 当前仓库已不再依赖 `flat` 布局的默认 `EFI 512MiB`
+- 存储脚本会先清空布局，再显式创建：
+  - `/boot/efi`：`2G`
+  - `/boot`：`2G`
+  - `/`：`200G` 或 `300G`
   - `/data`：剩余空间
+- 因此如果你要求系统里最终看到 `EFI System Partition = 2048M`，必须使用当前仓库中的 `maas_apply_storage_policy.py`
 
 ### 4.3 按策略 YAML 套用存储策略（推荐）
 
 推荐直接用和 deploy 相同的策略来源：
 
 - 存储脚本：[maas_apply_storage_policy.py](./scripts/maas_apply_storage_policy.py)
+- curtin 登录模板安装脚本：[maas_install_curtin_login_template.py](./scripts/maas_install_curtin_login_template.py)
 - 老脚本仍保留：[maas_apply_storage_policy_by_tag.sh](./scripts/maas_apply_storage_policy_by_tag.sh)
 
 默认规则和 deploy 一样：
@@ -393,6 +497,8 @@ PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-b 300G
 - MAAS 自己仍然维护“哪个 block device 是 boot disk”
 - 如果没有显式把 MAAS 的 boot disk 改成 `sda`，它可能继续按默认选择 `nvme0n1`
 - 之前测试机把系统装到 `nvme`，就是因为这里没有正确生效
+- UEFI 场景下只能把 `EFI` 分区标成 `bootable`；`/boot` 不能再带 `bootable=true`
+- 否则 MAAS 会把 `/boot` 也下发成第二个 `flag: boot` 分区，`grub-multi-install` 会把它当成备用 ESP 挂到 `/var/lib/grub/esp`，最终报 `doesn't look like an EFI partition`
 
 ### 4.3.1 部署失败后如何恢复到可重试状态
 
@@ -421,6 +527,84 @@ DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maa
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --all-ready --include-failed-deployment
 ```
 
+### 4.3.2 安装期登录注入模板（推荐）
+
+现场已经验证：如果部署完成后 MAAS metadata 的 `/user-data` 返回 `404 NOT_FOUND`，那么仅靠 deploy 时传入的 `user_data` 不能保证最终系统里的密码登录和 sshd 配置一定生效。要把“登录用户/密码/sshd/sudoers”做成稳定、可复用方案，推荐在 `curtin late_commands` 里直接写入目标系统。
+
+仓库已经提供通用安装脚本：
+
+- [maas_install_curtin_login_template.py](./scripts/maas_install_curtin_login_template.py)
+
+该脚本会：
+
+- 从 MAAS 当前的 `/etc/maas/preseeds/curtin_userdata` 复制基础模板
+- 读取 `deploy-policy.yaml` 里的 `sudo_user`、`root`、`ssh` 配置
+- 注入安装期 `late_commands`
+- 自动创建登录用户、写入密码、显式解锁账号
+- 写入 `/etc/sudoers.d/90-maas-<user>`
+- 删除 `/etc/ssh/sshd_config.d/50-cloud-init.conf`
+- 写入 `/etc/ssh/sshd_config.d/00-maas-password-auth.conf`
+
+推荐安装方式：
+
+1. 通用 Jammy 模板，适用于同类节点统一策略：
+
+```bash
+sudo python3 ./docs/scripts/maas_install_curtin_login_template.py \
+  --config ./docs/cloud-init/deploy-policy.yaml \
+  --policy default \
+  --series jammy
+```
+
+默认输出为：
+
+```text
+/etc/maas/preseeds/curtin_userdata_ubuntu_amd64_generic_jammy
+```
+
+2. 单节点覆盖模板，适用于某一台机器临时验证或定制策略：
+
+```bash
+sudo python3 ./docs/scripts/maas_install_curtin_login_template.py \
+  --config ./docs/cloud-init/deploy-policy.yaml \
+  --policy default \
+  --series jammy \
+  --hostname node-GPU-135
+```
+
+默认输出为：
+
+```text
+/etc/maas/preseeds/curtin_userdata_ubuntu_amd64_generic_jammy_node-GPU-135
+```
+
+说明：
+
+- 如果同系列节点都要统一密码登录策略，优先装通用模板
+- 如果只想给某台机器加覆盖逻辑，再装节点专用模板
+- 如果 `default/gpu/h100` 等策略使用的是不同登录用户或密码，不要只装一个 generic 模板；应按节点渲染专用模板
+- 节点专用模板优先级高于通用模板
+- 重新渲染同名模板时，脚本会替换已有的 `MAAS LOGIN INJECTION` 块
+- 该脚本使用安装期写入的方式规避 deployed 阶段 `/user-data` 缺失问题
+
+3. 如果要按 CSV 批量为每台机器生成专用模板，并自动按 `tag/tags` 命中策略：
+
+```bash
+sudo python3 ./docs/scripts/maas_install_curtin_login_template.py \
+  --config ./docs/cloud-init/deploy-policy.yaml \
+  --csv /root/maas-machines.csv
+```
+
+默认会生成：
+
+- `/etc/maas/preseeds/curtin_userdata_ubuntu_amd64_generic_jammy_<hostname>`
+
+该模式适用于：
+
+- `default/gpu/h100` 使用不同用户名或密码
+- 想让安装期登录注入和 deploy 策略保持一一对应
+- 批量装机时仍然保留统一脚本入口，但不牺牲节点差异化策略
+
 ### 4.4 CLI 方式部署（以 fntnkq 为例）
 
 ```bash
@@ -438,6 +622,7 @@ maas admin machine deploy fntnkq distro_series=jammy user_data="$(base64 -w0 ./u
 - 单机部署：[maas_deploy_one.sh](./scripts/maas_deploy_one.sh)
 - 批量部署：[maas_deploy_batch.sh](./scripts/maas_deploy_batch.sh)
 - 策略渲染核心：[maas_policy_deploy.py](./scripts/maas_policy_deploy.py)
+- curtin 登录模板安装：[maas_install_curtin_login_template.py](./scripts/maas_install_curtin_login_template.py)
 - 默认策略 YAML：[deploy-policy.yaml](./cloud-init/deploy-policy.yaml)
 - 兼容旧方式的 raw 模板：[default-user-data.yaml](./cloud-init/default-user-data.yaml)
 
@@ -474,6 +659,10 @@ sudo apt-get install -y python3-yaml
 - 如果 CSV 里带了 `sn`，脚本会通过 BMC Redfish 读取 `SerialNumber` 做核对；不一致会报错并跳过该节点
 - 如果 CSV 里带了 `25g`，脚本会生成 `/etc/netplan/99-bond25g.yaml`
 - 如果 CSV 里带了 `25g_mode`，会覆盖 bond 参数；如果没带，就使用策略 YAML 里的默认参数
+- `defaults.networking.apply_on_first_boot: false` 时，仍会写入 bond 配置文件，但不会在 cloud-init `runcmd` 里立即 `netplan apply`
+- 如果 CSV 里带了 `25g_apply`，会覆盖 YAML 的 `apply_on_first_boot`，支持按机器单独控制是否在首启切网
+- 当前最佳实践统一使用 Linux predictable interface names，例如 `ens12f0np0`、`ens12f1np1`；不要在策略 YAML、cloud-init、netplan 里继续写 `eth0`
+- 如果个别机器历史配置把口子改成了 `eth0`，应按该机器的实际 MAC 单独生成 `match.macaddress + set-name` 规则，不要在通用模板里做全局重命名
 - `node_id` 用来拼 Redfish 路径 `https://<bmc_ip>/redfish/v1/Systems/<node_id>`，通常默认 `1`，不要求全局唯一
 
 示例：
@@ -531,6 +720,7 @@ CSV 字段说明：
 - `sn`：可选，期望序列号；配置后会做校验，不一致直接报出
 - `25g`：可选，bond 地址配置；推荐格式 `"IP/CIDR,GATEWAY"`，例如 `"10.161.139.136/24,10.161.139.254"`
 - `25g_mode`：可选，支持 `802.3ad`、`mode=802.3ad miimon=100 xmit_hash_policy=layer3+4`、YAML/JSON 字典
+- `25g_apply`：可选，`true/false`；不填时使用 YAML 的 `defaults.networking.apply_on_first_boot`
 - `tag/tags`：可选，写回 MAAS 节点标签，并参与策略匹配；多个标签用逗号分隔
 
 补充说明：
@@ -540,14 +730,92 @@ CSV 字段说明：
 - 大多数厂商单机默认就是 `1`，只有实际 Redfish 路径不同才需要改
 - `sn`、`25g`、`25g_mode`、`tag/tags` 都是可选字段；不填就跳过
 
-### 4.4.3 直接使用方法
+### 4.4.3 当前最优单机装机步骤
 
-0. 推荐顺序：先套 storage，再 deploy：
+推荐顺序：
 
 ```bash
+sudo apt-get install -y python3-yaml
+
+sudo python3 ./docs/scripts/maas_install_curtin_login_template.py \
+  --config ./docs/cloud-init/deploy-policy.yaml \
+  --policy default \
+  --series jammy \
+  --hostname node-GPU-135
+
 PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --policy default fntnkq
 DEPLOY_CSV=/root/maas-machines.csv PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_one.sh fntnkq
 ```
+
+如果该节点当前是 `Failed deployment`，推荐先释放回 `Ready` 再重试：
+
+```bash
+maas admin machine release fntnkq comment="retry deployment" erase=false
+watch -n 2 'maas admin machine read fntnkq | jq -r ".status_name, .power_state"'
+```
+
+如果怀疑首启时 `bond0` 切网导致 `cloud-init final` 失败，优先切安装安全版策略：
+
+```bash
+maas admin machine release bh3wn6 erase=false comment='retry deploy with install-safe policy'
+DEPLOY_CONFIG=./docs/cloud-init/deploy-policy-install-safe.yaml \
+DEPLOY_CSV=/root/maas-machines.csv \
+PROFILE=admin SERIES=jammy \
+./docs/scripts/maas_deploy_one.sh bh3wn6
+```
+
+单机场景下最推荐的验收顺序：
+
+```bash
+maas admin machine read fntnkq | jq -r '.status_name, .power_state, (.ip_addresses // [])'
+nc -zvw3 <deploy-ip> 22
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@<deploy-ip>
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@<deploy-ip>
+```
+
+### 4.4.4 当前最优批量装机步骤
+
+推荐顺序：
+
+```bash
+sudo apt-get install -y python3-yaml
+
+sudo python3 ./docs/scripts/maas_install_curtin_login_template.py \
+  --config ./docs/cloud-init/deploy-policy.yaml \
+  --csv /root/maas-machines.csv
+
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment --dry-run
+
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment
+
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment --dry-run
+
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
+  --csv /root/maas-machines.csv \
+  --all-ready --include-failed-deployment
+```
+
+如果只想按 tag 分批推进，例如先装 `group-a`：
+
+```bash
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
+  --tag group-a --include-failed-deployment --dry-run
+
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py \
+  --csv /root/maas-machines.csv \
+  --tag group-a --include-failed-deployment
+
+PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --tag group-a
+```
+
+### 4.4.5 其他 deploy 用法
 
 1. 默认自动策略，单机部署：
 
@@ -597,7 +865,32 @@ PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-
 PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh --csv /root/maas-machines.csv --all-ready --include-failed-deployment --dry-run
 ```
 
-### 4.4.4 批量操作推荐顺序
+9. 安装安全版策略说明：
+
+- 文件：[deploy-policy-install-safe.yaml](./cloud-init/deploy-policy-install-safe.yaml)
+- 行为：仍会渲染 `25G bond` 的 netplan 文件，但不会在首启 `cloud-init final` 阶段立即 `netplan apply`
+- 适用场景：部署事件显示 `cloudinit running modules for final` 或者节点首启后 MAAS 立刻失联
+- 建议流程：先让节点稳定进入 `Deployed`，确认系统与 SSH 可用后，再手工 `netplan apply` 或择机重启切换到 bond 网络
+
+### 4.4.6 已落地的可复用方案清单
+
+上一轮和本轮的核心问题，当前已经在仓库里沉淀为这些可复用方案：
+
+- 存储脚本 [maas_apply_storage_policy.py](./scripts/maas_apply_storage_policy.py)
+  - 统一按策略 YAML 套盘
+  - 自动优先 `sda` / 非 `nvme` SSD 做系统盘
+  - 只把 `EFI` 分区标为 `bootable`
+- 部署脚本 [maas_policy_deploy.py](./scripts/maas_policy_deploy.py)
+  - 统一按 tag 或 `--policy` 选部署策略
+  - 支持从 CSV 绑定 hostname、SN 校验、25G bond 配置
+- 安装安全版策略 [deploy-policy-install-safe.yaml](./cloud-init/deploy-policy-install-safe.yaml)
+  - 用于规避首启 `netplan apply` 导致的 `cloud-init final` 失败
+- curtin 登录模板安装脚本 [maas_install_curtin_login_template.py](./scripts/maas_install_curtin_login_template.py)
+  - 解决 deployed 阶段 `/user-data` 缺失时密码登录不生效的问题
+  - 安装期直接创建用户、写密码、解锁账号、写 sudoers、落 sshd drop-in
+  - 支持 generic 模板、单节点模板、按 CSV 批量生成节点专用模板
+
+### 4.4.7 批量操作推荐顺序
 
 先 dry-run，确认 tag、策略命中、主机名、SN、25G 配置都正确：
 
@@ -678,7 +971,7 @@ PROFILE=admin ./docs/scripts/maas_bulk_lock.sh group-a
 
 已经修复：
 
-- `maas_apply_storage_policy_by_tag.sh` 现在会优先选择 `sda`
+- `maas_apply_storage_policy.py` 现在会优先选择 `sda`
 - 如果没有 `sda`，优先非 `nvme` 的 SSD/逻辑盘
 - 只有找不到合适 SSD 时，才会退化选择其他盘
 
@@ -695,26 +988,55 @@ maas admin machine release fntnkq comment="retry deploy after fixing boot disk" 
 2. 应用存储策略，强制让 `sda` 作为系统盘：
 
 ```bash
-PROFILE=admin ./docs/scripts/maas_apply_storage_policy_by_tag.sh group-a 200G
+PROFILE=admin ./docs/scripts/maas_apply_storage_policy.py --csv /root/maas-machines.csv --policy default fntnkq
 ```
 
-3. 检查 MAAS 视角下的 boot disk 和分区：
+3. 如果你依赖密码登录，先安装 curtin 登录模板：
+
+```bash
+sudo python3 ./docs/scripts/maas_install_curtin_login_template.py \
+  --config ./docs/cloud-init/deploy-policy.yaml \
+  --policy default \
+  --series jammy
+```
+
+4. 检查 MAAS 视角下的 boot disk 和分区：
 
 ```bash
 maas admin block-devices read fntnkq
 maas admin machine read fntnkq
 ```
 
-4. 再执行 deploy：
+5. 再执行 deploy：
 
 ```bash
 PROFILE=admin ./docs/scripts/maas_deploy_one.sh fntnkq
 ```
 
-5. 如果再次失败，继续查这几处：
+6. 如果再次失败，继续查这几处：
 
 - `maas admin events query id=fntnkq limit=100`
 - `maas admin machine get-curtin-config fntnkq`
 - 机器本地：`/var/log/cloud-init.log`
 - 机器本地：`/var/log/cloud-init-output.log`
 - 机器本地：`/var/log/installer/curtin-install.log`
+
+### 5.4 已验证的 SSH 密码登录修复
+
+如果节点已经能 `Deployed`，但 `ubuntu` 仍然密码登录失败，而 `root` 可以登录，优先检查账号是否仍然处于锁定状态：
+
+- 安装期只执行 `chpasswd -R <target>` 会写入密码，但不一定会自动解锁通过 `useradd` 新建的 `ubuntu`
+- 现场验证结果是：`root` 因为额外执行了 `passwd -R <target> -u root`，所以可登录；`ubuntu` 若未额外解锁，会表现为 `passwd -S ubuntu` 显示 `L`
+- curtin `late_commands` 里应同时执行：
+
+```bash
+printf '%s\n' 'ubuntu:Lexun@12#$' 'root:Lexun@12#$' | chpasswd -R "$t"
+passwd -R "$t" -u ubuntu || true
+passwd -R "$t" -u root || true
+```
+
+- 若还需要强制打开密码 SSH，继续保留：
+  - 删除 `/etc/ssh/sshd_config.d/50-cloud-init.conf`
+  - 写入 `/etc/ssh/sshd_config.d/00-maas-password-auth.conf`
+  - 内容至少包含 `PasswordAuthentication yes`、`PermitRootLogin yes`、`AllowUsers ubuntu root`
+- 重装后的第一次验证若出现 `REMOTE HOST IDENTIFICATION HAS CHANGED!`，要先忽略旧主机指纹再测；否则 SSH 客户端会主动禁用密码认证，造成误判

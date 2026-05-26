@@ -1,3 +1,4 @@
+# Example install-safe policy copied from the validated MAAS test controller.
 defaults:
   profile: admin
   distro_series: jammy
@@ -7,6 +8,7 @@ defaults:
     root_size: 200G
     data_mount: /data
   networking:
+    apply_on_first_boot: false
     predictable_interface_names: true
     predictable_interface_kernel_cmdline: "net.ifnames=1 biosdevname=0"
     bond25g:
@@ -38,6 +40,14 @@ defaults:
     allow_users:
       - ubuntu
       - root
+  cloud_init:
+    package_update: false
+    package_upgrade: false
+    package_reboot_if_required: false
+    ssh_import_id: []
+    snap:
+      commands: []
+    byobu_by_default: disable-user
 
 policy_match_order:
   - h100

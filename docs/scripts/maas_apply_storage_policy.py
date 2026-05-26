@@ -50,32 +50,57 @@ def parse_size_to_bytes(size_text):
     return int(float(value) * multiplier)
 
 
-def set_layout(profile, sysid, boot_size_bytes, root_size_bytes):
-    cmd = [
-        "maas",
-        profile,
-        "machine",
-        "set-storage-layout",
-        sysid,
-        "layout=flat",
-        f"boot_size={boot_size_bytes}",
-        f"root_size={root_size_bytes}",
-    ]
+def clear_layout(profile, sysid):
+    cmd = ["maas", profile, "machine", "set-storage-layout", sysid, "storage_layout=blank"]
     result = subprocess.run(cmd, text=True, capture_output=True)
     if result.returncode == 0:
         return
+    run_cmd(["maas", profile, "machine", "set-storage-layout", sysid, "layout=blank"])
+
+
+def create_partition(profile, sysid, dev_id, size_bytes=None, bootable=False):
+    cmd = ["maas", profile, "partitions", "create", sysid, str(dev_id)]
+    if size_bytes is not None:
+        cmd.append(f"size={size_bytes}")
+    if bootable:
+        cmd.append("bootable=true")
+    return json.loads(run_cmd(cmd).stdout)
+
+
+def format_and_mount_partition(profile, sysid, dev_id, part_id, fstype, mount_point, label=None):
+    cmd = ["maas", profile, "partition", "format", sysid, str(dev_id), str(part_id), f"fstype={fstype}"]
+    if label:
+        cmd.append(f"label={label}")
+    run_cmd(cmd)
     run_cmd(
         [
             "maas",
             profile,
-            "machine",
-            "set-storage-layout",
+            "partition",
+            "mount",
             sysid,
-            "storage_layout=flat",
-            f"boot_size={boot_size_bytes}",
-            f"root_size={root_size_bytes}",
+            str(dev_id),
+            str(part_id),
+            f"mount_point={mount_point}",
         ]
     )
+
+
+def set_layout(profile, sysid, dev_id, efi_size_bytes, boot_size_bytes, root_size_bytes, data_mount):
+    clear_layout(profile, sysid)
+    run_cmd(["maas", profile, "block-device", "set-boot-disk", sysid, str(dev_id)])
+
+    efi = create_partition(profile, sysid, dev_id, efi_size_bytes, bootable=True)
+    format_and_mount_partition(profile, sysid, dev_id, efi["id"], "fat32", "/boot/efi", label="efi")
+
+    # Only the EFI partition should be marked bootable on UEFI systems.
+    boot = create_partition(profile, sysid, dev_id, boot_size_bytes)
+    format_and_mount_partition(profile, sysid, dev_id, boot["id"], "ext4", "/boot", label="boot")
+
+    root = create_partition(profile, sysid, dev_id, root_size_bytes)
+    format_and_mount_partition(profile, sysid, dev_id, root["id"], "ext4", "/", label="root")
+
+    ensure_data_partition(profile, sysid, dev_id, data_mount)
 
 
 def pick_boot_device_id(profile, sysid):
@@ -215,6 +240,7 @@ def main():
         policy_name, reason = resolve_policy(config, machine_with_csv_tags, args.policy)
         effective_policy = build_effective_policy(config, policy_name)
         storage = effective_policy.get("storage") or {}
+        efi_size = storage.get("efi_size", "2G")
         boot_size = storage.get("boot_size", "2G")
         root_size = storage.get("root_size", "200G")
         data_mount = storage.get("data_mount", "/data")
@@ -222,16 +248,22 @@ def main():
 
         print(
             f"[storage] system_id={sysid} hostname={machine.get('hostname')} "
-            f"policy={policy_name} reason={reason} boot_size={boot_size} "
+            f"policy={policy_name} reason={reason} efi_size={efi_size} boot_size={boot_size} "
             f"root_size={root_size} data_mount={data_mount} "
             f"tags={','.join(machine_tags(machine_with_csv_tags)) or '-'}"
         )
         if args.dry_run:
             continue
 
-        run_cmd(["maas", profile, "block-device", "set-boot-disk", sysid, str(dev_id)])
-        set_layout(profile, sysid, parse_size_to_bytes(boot_size), parse_size_to_bytes(root_size))
-        ensure_data_partition(profile, sysid, dev_id, data_mount)
+        set_layout(
+            profile,
+            sysid,
+            dev_id,
+            parse_size_to_bytes(efi_size),
+            parse_size_to_bytes(boot_size),
+            parse_size_to_bytes(root_size),
+            data_mount,
+        )
 
 
 if __name__ == "__main__":
