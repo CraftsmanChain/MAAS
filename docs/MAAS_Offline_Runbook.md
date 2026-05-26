@@ -29,6 +29,47 @@
   - 如果 MAAS 主机已经装好，且离线资源与 CSV/BMC 数据已备齐，本仓库可以把新环境的离线交付流程压缩到“一套资源准备 + 一套标准命令链”
   - 如果是从一台裸机开始新建整个 MAAS 环境，仍需要先把基础 OS、MAAS 软件和网络条件准备好
 
+### 0.2 当前测试版本矩阵
+
+以下版本来自当前已验证环境 `10.161.139.136`，采集时间为 `2026-05-26`：
+
+- 控制机系统：Ubuntu 22.04
+- MAAS 部署方式：deb package
+- `maas-region-api`：`1:3.4.9-14399-g.48cea136e-0ubuntu1~22.04.1`
+- `maas-rack-controller`：`1:3.4.9-14399-g.48cea136e-0ubuntu1~22.04.1`
+- `maas-cli`：`1:3.4.9-14399-g.48cea136e-0ubuntu1~22.04.1`
+- `cloud-init`：`25.3-0ubuntu1~22.04.1`
+- `curtin-common` / `python3-curtin`：`23.1.1-1118-g3977ce90-0ubuntu1~ubuntu22.04.1`
+- `grub-efi-amd64` / `grub-efi-amd64-bin`：`2.06-2ubuntu14.8`
+- `grub-efi-amd64-signed`：`1.187.12+2.06-2ubuntu14.8`
+- `shim-signed`：`1.51.4+15.8-0ubuntu1`
+- `python3-yaml`：`5.4.1-1ubuntu1`
+
+说明：
+
+- 上述版本是当前 runbook 和脚本已验证通过的基线
+- 后续如果更换 MAAS 主版本、cloud-init、curtin 或 grub 版本，建议先单机回归，再批量部署
+- `apt-cache policy` 显示当前验证环境里的 `maas-region-api` / `maas-rack-controller` 候选版本与已安装版本一致，现场没有更高版本可直接切换
+
+### 0.3 离线 MAAS 能否做到一键部署
+
+当前结论分两层：
+
+- 可以一键的部分：
+  - 统一离线资源目录
+  - 离线 HTTP 服务
+  - MAAS 的 `boot-source` / `package-repository`
+  - CSV 纳管、打标签、套盘、部署、curtin 登录模板
+- 还不能一键的部分：
+  - 从裸机开始安装 Ubuntu 控制机
+  - 从零安装并初始化 MAAS region/rack 软件包
+  - 自动完成 PostgreSQL、网络、VLAN、DHCP、BMC 数据采集
+
+因此当前仓库最准确的能力描述是：
+
+- 已支持“MAAS 控制端初始化完成后的条件式一键离线交付”
+- 暂未支持“从裸机到 MAAS 控制端完全自动化”的一键拉起
+
 ## 1. 离线资源服务（单服务 + 单端口 + 单根目录）
 
 ### 1.1 目录规划（示例）
@@ -216,6 +257,95 @@ curl -I http://10.161.139.136:8083/mirror/ephemeral-v3/stable/jammy/amd64/202604
 建议统一放在 `/srv/maas-offline/tools/` 下，通过：
 
 - `http://10.161.139.136:8083/tools/<文件名>` 访问
+
+### 1.4.1 离线安装与初始化 MAAS 控制端
+
+如果是全新的离线环境，建议先手动完成 MAAS 控制端最小初始化，再使用仓库里的“一键”脚本接管后续流程。
+
+推荐最短步骤如下：
+
+1. 安装 Ubuntu 22.04 控制机，并先把管理口网络配好
+
+- 建议从安装期开始使用 predictable interface names
+- 当前仓库推荐固定使用 `ens12f0np0`、`ens12f1np1`
+- 如果后续要接管部署节点网络，也建议控制机自身先统一这套命名习惯
+
+2. 把控制机 APT 源指向离线 Ubuntu 仓库
+
+例如：
+
+```bash
+cat >/etc/apt/sources.list <<'EOF'
+deb http://<server-ip>:8083/iso jammy main restricted universe multiverse
+deb http://<server-ip>:8083/iso jammy-updates main restricted universe multiverse
+deb http://<server-ip>:8083/iso jammy-security main restricted universe multiverse
+EOF
+
+apt-get update
+```
+
+3. 安装 MAAS 相关软件包
+
+```bash
+apt-get install -y \
+  maas-region-api \
+  maas-rack-controller \
+  maas-cli \
+  cloud-init \
+  curtin-common \
+  python3-yaml
+```
+
+4. 初始化 MAAS region/rack
+
+当前 runbook 不替代官方 `maas init` 参数说明；数据库参数以现场模式为准：
+
+- 如果使用外部 PostgreSQL，按你的 `postgres://...` 连接串初始化
+- 如果使用本机 PostgreSQL，按当前版本 `maas init --help` 的推荐参数执行
+
+最小参考命令：
+
+```bash
+maas init region+rack --maas-url http://<server-ip>:5240/MAAS
+maas createadmin --username admin --password '<password>' --email '<email>'
+API_KEY="$(maas apikey --username admin)"
+maas login admin http://<server-ip>:5240/MAAS "$API_KEY"
+```
+
+注意：
+
+- 不同 MAAS 小版本的 `init` 参数和数据库初始化提示可能略有差异，现场以 `maas init --help` 为准
+- 当前仓库还没有把这一步做成稳定的一键脚本，所以控制端初始化仍建议手动执行
+
+5. 控制端初始化完成后，再切到仓库自动化
+
+后续即可直接运行：
+
+```bash
+chmod +x ./docs/maas-offline-oneclick.sh
+./docs/maas-offline-oneclick.sh
+```
+
+再继续执行：
+
+```bash
+maas admin boot-source update 1 \
+  url=http://<server-ip>:8083/mirror/ephemeral-v3/stable/ \
+  keyring_filename=/usr/share/keyrings/ubuntu-cloudimage-keyring.gpg
+maas admin boot-resources import
+
+maas admin package-repository update 1 url=http://<server-ip>:8083/iso
+maas admin package-repository update 3 url=http://<server-ip>:8083/tools/lldpd-mini-repo
+```
+
+结论：
+
+- 如果问“离线怎么部署配置 MAAS”，当前答案是：
+  - 先手动完成 Ubuntu + MAAS region/rack 的最小安装初始化
+  - 再用仓库脚本接管离线资源服务、boot-source、package repo、纳管、套盘、部署
+- 如果问“能不能做到一键部署”，当前答案是：
+  - 控制端初始化后，可以
+  - 从裸机开始，到 MAAS 本体全部自动化，当前仓库还没有做到
 
 ### 1.5 全新离线环境资源清单
 
@@ -662,7 +792,9 @@ sudo apt-get install -y python3-yaml
 - `defaults.networking.apply_on_first_boot: false` 时，仍会写入 bond 配置文件，但不会在 cloud-init `runcmd` 里立即 `netplan apply`
 - 如果 CSV 里带了 `25g_apply`，会覆盖 YAML 的 `apply_on_first_boot`，支持按机器单独控制是否在首启切网
 - 当前最佳实践统一使用 Linux predictable interface names，例如 `ens12f0np0`、`ens12f1np1`；不要在策略 YAML、cloud-init、netplan 里继续写 `eth0`
-- 如果个别机器历史配置把口子改成了 `eth0`，应按该机器的实际 MAC 单独生成 `match.macaddress + set-name` 规则，不要在通用模板里做全局重命名
+- `defaults.networking.predictable_interface_names: true` 时，deploy cloud-init 会写入 `/etc/default/grub.d/90-maas-predictable-ifnames.cfg`，确保后续启动使用 `net.ifnames=1 biosdevname=0`
+- `maas_install_curtin_login_template.py` 也会在 curtin 安装期把同一份 GRUB 配置写进目标系统，并执行 `update-grub`，确保首启就按 predictable names 生效
+- 如果个别机器历史配置把口子改成了 `eth0`，优先先检查是否有 `net.ifnames=0` 或旧的 udev/link 规则残留；只有确认是单机特例时，才按该机器的实际 MAC 单独生成 `match.macaddress + set-name` 规则
 - `node_id` 用来拼 Redfish 路径 `https://<bmc_ip>/redfish/v1/Systems/<node_id>`，通常默认 `1`，不要求全局唯一
 
 示例：
@@ -672,6 +804,8 @@ defaults:
   profile: admin
   distro_series: jammy
   networking:
+    predictable_interface_names: true
+    predictable_interface_kernel_cmdline: "net.ifnames=1 biosdevname=0"
     bond25g:
       bond_name: bond0
       interfaces: [ens12f0np0, ens12f1np1]

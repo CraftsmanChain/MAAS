@@ -21,9 +21,25 @@
   - 从零安装和初始化 MAAS 软件包
   - 自动完成交换机、VLAN、DHCP、路由和 BMC 数据采集
 
+## 一键边界
+
+- 当前可以做到：
+  - MAAS 控制端初始化完成后的条件式一键离线交付
+  - 包括离线资源服务、boot-source、package repositories、纳管、套盘、部署
+- 当前还做不到：
+  - 从裸机开始，把 Ubuntu 控制机、MAAS region/rack、数据库、网络全部一键拉起
+- 当前测试验证基线：
+  - Ubuntu 22.04
+  - MAAS `3.4.9`
+  - `cloud-init 25.3`
+  - `curtin-common 23.1.1`
+  - `grub-efi-amd64 2.06-2ubuntu14.8`
+  - 详细版本矩阵见 `docs/MAAS_Offline_Runbook.md` 的 `0.2`
+
 ## 推荐入口
 
-- 全新离线环境资源清单与最短操作链：`docs/MAAS_Offline_Runbook.md` 的 `0.1`、`1.5`、`1.6`
+- 离线控制端安装与一键边界：`docs/MAAS_Offline_Runbook.md` 的 `0.1`、`0.2`、`0.3`、`1.4.1`
+- 全新离线环境资源清单与最短操作链：`docs/MAAS_Offline_Runbook.md` 的 `1.5`、`1.6`
 - 单机最佳实践：`docs/MAAS_Offline_Runbook.md` 的 `4.4.3`
 - 批量最佳实践：`docs/MAAS_Offline_Runbook.md` 的 `4.4.4`
 - 问题收口与复用方案清单：`docs/MAAS_Offline_Runbook.md` 的 `4.4.6`、`5.2`、`5.4`
