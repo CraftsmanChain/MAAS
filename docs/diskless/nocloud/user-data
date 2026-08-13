@@ -1,0 +1,20 @@
+#cloud-config
+autoinstall:
+  version: 1
+  early-commands:
+    - |
+      set -eu
+      echo "MAAS Stage1 capture started" >/dev/console
+      printf '%s\n' 'deb [trusted=yes] __TOOLS_REPO_URL__ jammy main' >/etc/apt/sources.list.d/maas-stage1-tools.list
+      apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=10 update || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ipmitool || true
+      for attempt in $(seq 1 30); do
+        if wget -O /tmp/maas-stage1-report.py "__STAGE1_SCRIPT_URL__"; then
+          break
+        fi
+        sleep 2
+      done
+      python3 /tmp/maas-stage1-report.py
+      echo "MAAS Stage1 capture finished; powering off" >/dev/console
+      sleep 5
+      poweroff -f || reboot -f

@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-offline/mirror --map /iso=/srv/maas-offline/iso --map /tools=/srv/maas-offline/tools
+ExecStart=/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-offline/mirror --map /iso=/srv/maas-offline/iso --map /tools=/srv/maas-offline/tools --map /diskless=/srv/maas-offline/diskless --map /stage1=/srv/maas-offline/stage1
 Restart=always
 RestartSec=2
 

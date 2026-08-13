@@ -3,6 +3,7 @@
 import argparse
 import base64
 import csv
+import ipaddress
 import json
 import re
 import subprocess
@@ -126,6 +127,10 @@ def resolve_series(config, cli_series):
     return cli_series or config.get("defaults", {}).get("distro_series") or "jammy"
 
 
+def resolve_osystem(config, cli_osystem):
+    return cli_osystem or config.get("defaults", {}).get("osystem") or "ubuntu"
+
+
 def load_csv_rows(csv_path):
     if not csv_path:
         return []
@@ -195,6 +200,60 @@ def build_effective_policy(config, policy_name):
     merged = deep_merge(defaults, policy)
     merged["policy_name"] = policy_name
     return merged
+
+
+def load_default_user_data(path):
+    user_data_path = Path(path)
+    if not user_data_path.exists():
+        raise SystemExit(f"default user-data not found: {user_data_path}")
+    data = yaml.safe_load(user_data_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"invalid default user-data: {user_data_path}")
+    return data
+
+
+def login_policy_from_user_data(user_data):
+    users = [item for item in normalize_list(user_data.get("users")) if isinstance(item, dict)]
+    sudo_user = next((item for item in users if item.get("name") and item.get("name") != "root"), {})
+    passwords = {}
+    chpasswd = user_data.get("chpasswd") or {}
+    for item in normalize_list(chpasswd.get("users") if isinstance(chpasswd, dict) else []):
+        if isinstance(item, dict) and item.get("name"):
+            passwords[str(item["name"])] = str(item.get("password") or "")
+
+    ssh_options = {}
+    for item in normalize_list(user_data.get("write_files")):
+        if not isinstance(item, dict) or "sshd_config" not in str(item.get("path") or ""):
+            continue
+        for line in str(item.get("content") or "").splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                ssh_options[parts[0].lower()] = parts[1].strip()
+
+    username = str(sudo_user.get("name") or "ubuntu")
+    sudo_rule_text = " ".join(str(item) for item in normalize_list(sudo_user.get("sudo")))
+    root_enabled = not normalize_bool(user_data.get("disable_root"), default=False)
+    return {
+        "sudo_user": {
+            "name": username,
+            "gecos": sudo_user.get("gecos") or username,
+            "groups": normalize_list(sudo_user.get("groups") or ["adm", "sudo"]),
+            "shell": sudo_user.get("shell") or "/bin/bash",
+            "password": passwords.get(username, ""),
+            "sudo_nopasswd": "NOPASSWD" in sudo_rule_text.upper(),
+            "ssh_authorized_keys": normalize_list(sudo_user.get("ssh_authorized_keys")),
+        },
+        "root": {
+            "enabled": root_enabled,
+            "password": passwords.get("root", ""),
+        },
+        "ssh": {
+            "password_authentication": normalize_bool(user_data.get("ssh_pwauth"), default=True),
+            "permit_root_login": ssh_options.get("permitrootlogin", "yes" if root_enabled else "no"),
+            "pubkey_authentication": ssh_options.get("pubkeyauthentication", "yes").lower() == "yes",
+            "allow_users": ssh_options.get("allowusers", "").split(),
+        },
+    }
 
 
 def resolve_csv_hostname(machine, csv_rows):
@@ -321,6 +380,45 @@ def parse_25g_value(raw_value):
     return data
 
 
+def find_dynamic_range_conflict(profile, subnet_id, target_ip):
+    try:
+        ranges = maas_json(profile, "ipranges", "read")
+    except Exception:
+        return None
+    for item in ranges:
+        if str(item.get("type") or "").strip().lower() != "dynamic":
+            continue
+        subnet = item.get("subnet") or {}
+        if str(subnet.get("id")) != str(subnet_id):
+            continue
+        start_ip = str(item.get("start_ip") or "").strip()
+        end_ip = str(item.get("end_ip") or "").strip()
+        if not start_ip or not end_ip:
+            continue
+        try:
+            start = ipaddress.ip_address(start_ip)
+            end = ipaddress.ip_address(end_ip)
+        except ValueError:
+            continue
+        if start <= target_ip <= end:
+            return {
+                "start_ip": start_ip,
+                "end_ip": end_ip,
+                "range_id": item.get("id"),
+                "comment": str(item.get("comment") or "").strip(),
+            }
+    return None
+
+
+def normalize_network_mode(value, default="bond25g"):
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"bond25g", "bond_25g", "bond"}:
+        return "bond25g"
+    if text in {"single_nic", "single", "nobond", "no_bond"}:
+        return "single_nic"
+    return default
+
+
 def normalize_bond_parameter_key(key):
     normalized = str(key or "").strip().lower().replace("-", "_")
     normalized = re.sub(r"\s+", "_", normalized)
@@ -404,13 +502,47 @@ def build_bond25g_config(policy, csv_row):
     }
 
 
-def should_apply_bond_on_first_boot(policy, csv_row):
+def build_single_nic_config(policy, csv_row):
+    raw_25g = csv_row.get("25g")
+    if not str(raw_25g or "").strip():
+        return {}
+
+    network_defaults = ((policy.get("networking") or {}).get("single_nic") or {})
+    csv_25g = parse_25g_value(raw_25g)
+    interface_name = str(network_defaults.get("interface_name") or "eno4").strip()
+    if not interface_name:
+        return {}
+
+    ethernet = {"dhcp4": False}
+    if csv_25g.get("address"):
+        ethernet["addresses"] = [csv_25g["address"]]
+    if csv_25g.get("gateway4"):
+        ethernet["gateway4"] = csv_25g["gateway4"]
+    nameservers = normalize_list(network_defaults.get("nameservers"))
+    if nameservers:
+        ethernet["nameservers"] = {"addresses": nameservers}
+
+    return {
+        "version": 2,
+        "ethernets": {interface_name: ethernet},
+    }
+
+
+def should_apply_network_on_first_boot(policy, csv_row):
     networking = policy.get("networking") or {}
     raw_value = first_non_empty(
         (csv_row or {}).get("25g_apply"),
         networking.get("apply_on_first_boot"),
     )
     return normalize_bool(raw_value, default=True)
+
+
+def effective_network_mode(policy, csv_row):
+    configured = first_non_empty(
+        (csv_row or {}).get("network_mode"),
+        ((policy.get("networking") or {}).get("mode")),
+    )
+    return normalize_network_mode(configured, default="bond25g")
 
 
 def predictable_ifname_kernel_cmdline(policy):
@@ -424,44 +556,152 @@ def predictable_ifname_kernel_cmdline(policy):
     ).strip()
 
 
-def fetch_redfish_serial(csv_row):
+def fetch_redfish_identity(csv_row):
     bmc_ip = (csv_row.get("bmc_ip") or "").strip()
     bmc_user = (csv_row.get("bmc_user") or "").strip()
     bmc_pass = (csv_row.get("bmc_pass") or "").strip()
-    node_id = (csv_row.get("node_id") or "1").strip() or "1"
     if not (bmc_ip and bmc_user and bmc_pass):
-        return ""
+        return {"primary": "", "candidates": []}
+    raw_node_id = (csv_row.get("node_id") or "").strip()
+    node_candidates = []
+    for candidate in [raw_node_id, "System.Embedded.1", "1"]:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in node_candidates:
+            node_candidates.append(candidate)
 
-    result = run_cmd_optional(
-        [
-            "curl",
-            "-sk",
-            "-u",
-            f"{bmc_user}:{bmc_pass}",
-            f"https://{bmc_ip}/redfish/v1/Systems/{node_id}",
-        ]
-    )
-    if result.returncode != 0:
-        return ""
+    for node_id in node_candidates:
+        result = run_cmd_optional(
+            [
+                "curl",
+                "-sk",
+                "-u",
+                f"{bmc_user}:{bmc_pass}",
+                f"https://{bmc_ip}/redfish/v1/Systems/{node_id}",
+            ]
+        )
+        if result.returncode != 0:
+            continue
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            continue
+        oem = payload.get("Oem") or {}
+        dell = oem.get("Dell") or {}
+        dell_system = dell.get("DellSystem") or {}
+        candidates = []
+        for value in (
+            dell_system.get("ServiceTag"),
+            payload.get("SKU"),
+            payload.get("SerialNumber"),
+            payload.get("AssetTag"),
+        ):
+            text = str(value or "").strip()
+            if text and text not in candidates:
+                candidates.append(text)
+        if candidates:
+            return {"primary": candidates[0], "candidates": candidates}
+    return {"primary": "", "candidates": []}
 
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return ""
-    return str(payload.get("SerialNumber") or "").strip()
 
-
-def verify_serial(csv_row):
+def verify_serial(csv_row, machine=None):
     expected = str(csv_row.get("sn") or "").strip()
     if not expected:
         return True, "", ""
-    actual = fetch_redfish_serial(csv_row)
+    machine = machine or {}
+    hardware_info = machine.get("hardware_info") or {}
+    commissioned_serials = [
+        str(hardware_info.get(key) or "").strip()
+        for key in ("system_serial", "chassis_serial", "mainboard_serial")
+    ]
+    expected_lower = expected.lower()
+    for actual in commissioned_serials:
+        if not actual:
+            continue
+        if actual.lower() == expected_lower or expected_lower in actual.lower():
+            return True, expected, actual
+    if any(commissioned_serials):
+        return False, expected, next(item for item in commissioned_serials if item)
+    identity = fetch_redfish_identity(csv_row)
+    actual = identity.get("primary") or ""
     if not actual:
-        return False, expected, ""
-    return actual == expected, expected, actual
+        # Redfish access is optional for IPMI-managed BMC users. Stage1 and MAAS
+        # commissioning already bind this record to the expected serial.
+        return True, expected, ""
+    candidates = [str(item).strip() for item in identity.get("candidates") or [] if str(item).strip()]
+    matched = any(item.lower() == expected_lower for item in candidates)
+    return matched, expected, actual
 
 
-def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
+def ensure_maas_deploy_link(profile, machine, csv_row, dry_run=False):
+    network = parse_25g_value((csv_row or {}).get("25g"))
+    address = str(network.get("address") or "").strip()
+    if not address:
+        return
+    try:
+        target = ipaddress.ip_interface(address)
+    except ValueError as exc:
+        raise SystemExit(f"invalid deployment address in CSV: {address}: {exc}") from exc
+
+    system_id = machine["system_id"]
+    interfaces = maas_json(profile, "interfaces", "read", system_id)
+    target_mac = normalize_mac((csv_row or {}).get("pxe_mac"))
+    candidates = [
+        item for item in interfaces
+        if not target_mac or normalize_mac(item.get("mac_address")) == target_mac
+    ]
+    if not candidates:
+        raise SystemExit(f"no MAAS interface matches pxe_mac={target_mac or '-'} for {system_id}")
+    interface = next((item for item in candidates if item.get("link_connected")), candidates[0])
+
+    for link in interface.get("links") or []:
+        if str(link.get("ip_address") or "").strip() == str(target.ip):
+            return
+
+    subnets = maas_json(profile, "subnets", "read")
+    subnet = next(
+        (
+            item for item in subnets
+            if ipaddress.ip_network(str(item.get("cidr") or ""), strict=False) == target.network
+        ),
+        None,
+    )
+    if not subnet:
+        raise SystemExit(f"MAAS subnet not found for deployment address {address}")
+    gateway = str(network.get("gateway4") or "").strip()
+    print(
+        f"[network] system_id={system_id} interface={interface.get('name')} "
+        f"subnet={subnet.get('cidr')} static_ip={target.ip} gateway={gateway or '-'}",
+        file=sys.stderr,
+    )
+    if dry_run:
+        return
+    if gateway and str(subnet.get("gateway_ip") or "").strip() != gateway:
+        run_maas(profile, "subnet", "update", str(subnet["id"]), f"gateway_ip={gateway}")
+    conflict = find_dynamic_range_conflict(profile, subnet["id"], target.ip)
+    if conflict:
+        label = f"{conflict['start_ip']} to {conflict['end_ip']}"
+        detail = f" (range_id={conflict['range_id']})" if conflict.get("range_id") else ""
+        comment = f", comment={conflict['comment']}" if conflict.get("comment") else ""
+        raise SystemExit(
+            "deployment network conflict: "
+            f"static IP {target.ip} for {machine.get('hostname') or system_id} falls inside "
+            f"MAAS dynamic range {label} on subnet {subnet.get('cidr')}{detail}{comment}. "
+            "Update server.dhcp_range so it does not include the node static IP, "
+            "or change the CSV 25g address to an IP outside the MAAS dynamic range."
+        )
+    run_maas(
+        profile,
+        "interface",
+        "link-subnet",
+        system_id,
+        str(interface["id"]),
+        "mode=STATIC",
+        f"subnet={subnet['id']}",
+        f"ip_address={target.ip}",
+    )
+
+
+def render_cloud_init(machine, policy, hostname_override="", csv_row=None, base_user_data=None):
     sudo_user = policy.get("sudo_user") or {}
     root = policy.get("root") or {}
     ssh = policy.get("ssh") or {}
@@ -551,7 +791,9 @@ def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
         )
         runcmd.append("update-grub || true")
 
-    bond25g = build_bond25g_config(policy, csv_row)
+    network_mode = effective_network_mode(policy, csv_row)
+    bond25g = build_bond25g_config(policy, csv_row) if network_mode == "bond25g" else {}
+    single_nic = build_single_nic_config(policy, csv_row) if network_mode == "single_nic" else {}
     if bond25g:
         write_files.append(
             {
@@ -560,8 +802,12 @@ def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
                 "content": yaml.safe_dump({"network": bond25g}, sort_keys=False),
             }
         )
-        if should_apply_bond_on_first_boot(policy, csv_row):
+        if should_apply_network_on_first_boot(policy, csv_row):
             runcmd.append("netplan generate && netplan apply || true")
+    elif single_nic:
+        # MAAS renders the single-NIC netplan from the MAC-linked static address.
+        # Emitting a second file here creates duplicate addresses/default routes.
+        pass
 
     cloud_init = {
         "hostname": hostname,
@@ -580,6 +826,7 @@ def render_cloud_init(machine, policy, hostname_override="", csv_row=None):
     }
     if chpasswd_users:
         cloud_init["chpasswd"] = {"expire": False, "users": chpasswd_users}
+    cloud_init = deep_merge(base_user_data or {}, cloud_init)
     cloud_init = deep_merge(cloud_init, policy.get("cloud_init") or {})
     return "#cloud-config\n" + yaml.safe_dump(cloud_init, sort_keys=False)
 
@@ -608,7 +855,7 @@ def list_targets(profile, tag=None, all_ready=False, explicit_ids=None, include_
     raise SystemExit("no target machines: provide system_id, --tag, or --all-ready")
 
 
-def deploy_machine(profile, series, machine, user_data_text, dry_run=False):
+def deploy_machine(profile, osystem, series, machine, user_data_text, dry_run=False):
     if dry_run:
         return
     encoded = base64.b64encode(user_data_text.encode("utf-8")).decode("ascii")
@@ -619,6 +866,7 @@ def deploy_machine(profile, series, machine, user_data_text, dry_run=False):
             "machine",
             "deploy",
             machine["system_id"],
+            f"osystem={osystem}",
             f"distro_series={series}",
             f"user_data={encoded}",
         ]
@@ -673,13 +921,16 @@ def maybe_update_maas_hostname(profile, machine, target_hostname, dry_run=False)
 def parse_args():
     script_dir = Path(__file__).resolve().parent
     default_config = script_dir.parent / "cloud-init" / "deploy-policy.yaml"
+    default_user_data = script_dir.parent / "cloud-init" / "default-user-data.yaml"
 
     parser = argparse.ArgumentParser(
         description="Deploy MAAS machines with tag-aware policy YAML and cloud-init rendering."
     )
     parser.add_argument("system_ids", nargs="*", help="Target MAAS system_id list")
     parser.add_argument("--config", default=str(default_config), help="Policy YAML path")
+    parser.add_argument("--user-data", default=str(default_user_data), help="Default account/cloud-init YAML path")
     parser.add_argument("--profile", help="MAAS CLI profile, default from YAML or admin")
+    parser.add_argument("--osystem", help="MAAS operating system, for example ubuntu or custom")
     parser.add_argument("--series", help="Ubuntu distro series, default from YAML or jammy")
     parser.add_argument("--policy", help="Force policy name and bypass tag auto-match")
     parser.add_argument("--csv", help="CSV file with hostname,pxe_mac,... used to override target hostname")
@@ -706,9 +957,12 @@ def main():
     args = parse_args()
     with open(args.config, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
+    base_user_data = load_default_user_data(args.user_data)
+    login_defaults = login_policy_from_user_data(base_user_data)
     csv_rows = load_csv_rows(args.csv)
 
     profile = resolve_profile(config, args.profile)
+    osystem = resolve_osystem(config, args.osystem)
     series = resolve_series(config, args.series)
     include_statuses = {"ready"}
     if args.include_failed_deployment:
@@ -728,7 +982,7 @@ def main():
 
     for sysid in targets:
         machine = maas_json(profile, "machine", "read", sysid)
-        if (machine.get("status_name") or "").lower() == "failed deployment" and args.include_failed_deployment:
+        if (machine.get("status_name") or "").lower() == "failed deployment":
             print(
                 f"[deploy] system_id={sysid} hostname={machine.get('hostname')} auto release from Failed deployment",
                 file=sys.stderr,
@@ -742,7 +996,7 @@ def main():
             machine = maas_json(profile, "machine", "read", sysid)
         machine_with_csv_tags = merge_machine_csv_tags(machine, csv_row)
         policy_name, reason = resolve_policy(config, machine_with_csv_tags, args.policy)
-        effective_policy = build_effective_policy(config, policy_name)
+        effective_policy = deep_merge(login_defaults, build_effective_policy(config, policy_name))
         hostname_override = first_non_empty(
             (csv_row or {}).get("hostname"),
             resolve_csv_hostname(machine, csv_rows),
@@ -753,7 +1007,7 @@ def main():
             machine.get("fqdn"),
             machine.get("system_id"),
         )
-        serial_ok, expected_sn, actual_sn = verify_serial(csv_row)
+        serial_ok, expected_sn, actual_sn = verify_serial(csv_row, machine)
         if not serial_ok:
             message = (
                 f"[deploy] system_id={sysid} hostname={target_hostname} serial mismatch "
@@ -762,11 +1016,13 @@ def main():
             print(message, file=sys.stderr)
             failures.append(message)
             continue
+        ensure_maas_deploy_link(profile, machine, csv_row, dry_run=args.dry_run)
         user_data_text = render_cloud_init(
             machine,
             effective_policy,
             hostname_override=hostname_override,
             csv_row=csv_row,
+            base_user_data=base_user_data,
         )
 
         print(
@@ -778,7 +1034,7 @@ def main():
             print(user_data_text)
             continue
         maybe_update_maas_hostname(profile, machine, target_hostname, dry_run=False)
-        deploy_machine(profile, series, machine, user_data_text, dry_run=False)
+        deploy_machine(profile, osystem, series, machine, user_data_text, dry_run=False)
 
     if failures:
         raise SystemExit("\n".join(failures))

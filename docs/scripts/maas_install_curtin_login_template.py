@@ -16,6 +16,9 @@ except ImportError as exc:
 
 from maas_policy_deploy import (
     build_effective_policy,
+    deep_merge,
+    load_default_user_data,
+    login_policy_from_user_data,
     load_csv_rows,
     normalize_bool,
     normalize_list,
@@ -36,6 +39,7 @@ END_MARKER = "  # END MAAS LOGIN INJECTION"
 def parse_args():
     script_dir = Path(__file__).resolve().parent
     default_config = script_dir.parent / "cloud-init" / "deploy-policy.yaml"
+    default_user_data = script_dir.parent / "cloud-init" / "default-user-data.yaml"
     parser = argparse.ArgumentParser(
         description=(
             "Render and install a reusable MAAS curtin template that enforces "
@@ -43,6 +47,7 @@ def parse_args():
         )
     )
     parser.add_argument("--config", default=str(default_config), help="Policy YAML path")
+    parser.add_argument("--user-data", default=str(default_user_data), help="Default account/cloud-init YAML path")
     parser.add_argument(
         "--policy",
         help=(
@@ -107,11 +112,11 @@ def load_config(config_path):
     return config
 
 
-def resolve_login_policy(config, policy_name):
+def resolve_login_policy(config, policy_name, login_defaults=None):
     policies = config.get("policies") or {}
     if policy_name not in policies:
         raise SystemExit(f"policy not found: {policy_name}")
-    return build_effective_policy(config, policy_name)
+    return deep_merge(login_defaults or {}, build_effective_policy(config, policy_name))
 
 
 def predictable_ifname_kernel_cmdline(policy):
@@ -301,7 +306,7 @@ def render_to_target(template_text, policy, output_path=None, stdout=False):
     print(f"wrote {output_path}")
 
 
-def render_batch(args, config, template_text):
+def render_batch(args, config, template_text, login_defaults):
     if args.stdout:
         raise SystemExit("--stdout cannot be combined with --csv batch mode")
 
@@ -322,7 +327,7 @@ def render_batch(args, config, template_text):
         policy_name = args.policy
         if not policy_name:
             policy_name, _ = resolve_policy(config, fake_machine, forced_policy=None)
-        policy = resolve_login_policy(config, policy_name)
+        policy = resolve_login_policy(config, policy_name, login_defaults)
         node_args = argparse.Namespace(**vars(args))
         node_args.hostname = hostname
         target_path = output_dir / derive_template_name(node_args)
@@ -332,17 +337,18 @@ def render_batch(args, config, template_text):
 def main():
     args = parse_args()
     config = load_config(args.config)
+    login_defaults = login_policy_from_user_data(load_default_user_data(args.user_data))
     source_template = Path(args.source_template)
     if not source_template.exists():
         raise SystemExit(f"source template not found: {source_template}")
     template_text = source_template.read_text(encoding="utf-8")
 
     if args.csv:
-        render_batch(args, config, template_text)
+        render_batch(args, config, template_text, login_defaults)
         return
 
     policy_name = args.policy or "default"
-    policy = resolve_login_policy(config, policy_name)
+    policy = resolve_login_policy(config, policy_name, login_defaults)
 
     if args.stdout:
         render_to_target(template_text, policy, stdout=True)

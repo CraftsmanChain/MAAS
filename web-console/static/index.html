@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAAS 集成控制台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <div>
+        <strong>MAAS Control</strong>
+        <small>Offline Provisioning</small>
+      </div>
+    </div>
+    <nav>
+      <a class="active" href="#overview" data-nav-page="workbench">集群总览</a>
+      <a href="#pipeline" data-nav-page="workbench">交付流程</a>
+      <a href="#operations" data-nav-page="workbench">批量操作</a>
+      <a href="#nodes" data-nav-page="workbench">节点状态</a>
+      <a href="#automation" data-nav-page="automation">自动化与检测</a>
+      <a href="#health" data-nav-page="workbench">系统健康</a>
+      <a href="#config" data-nav-page="config">配置管理</a>
+    </nav>
+    <button id="focusSearchBtn" type="button" class="sidebar-search">
+      <span>搜索节点 / 阶段</span>
+      <kbd>Ctrl K</kbd>
+    </button>
+    <div class="side-card">
+      <span>执行模式</span>
+      <strong id="mutationBadge">loading</strong>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Physical delivery orchestration</div>
+        <h1>离线装机集成控制台</h1>
+        <p id="sourceRoot">加载中</p>
+      </div>
+      <div id="topbarMeta" class="topbar-meta"></div>
+      <div class="topbar-actions">
+        <div class="refresh-meta">
+          <span>自动刷新 20s</span>
+          <span id="lastUpdatedAt">最后更新：--</span>
+        </div>
+        <button id="refreshBtn" type="button" class="icon-btn" title="刷新">R</button>
+      </div>
+    </header>
+
+    <section id="overview" class="metrics"></section>
+
+    <section id="modeControl" class="mode-control panel">
+      <div class="mode-summary">
+        <span class="eyebrow">Exclusive service mode</span>
+        <div class="mode-title-row">
+          <h2 id="activeModeLabel">状态识别中</h2>
+          <span id="activeModeBadge" class="badge">loading</span>
+        </div>
+        <p id="activeModeDescription">正在读取 DHCP/TFTP 服务状态。</p>
+      </div>
+      <div class="mode-switcher" role="group" aria-label="服务模式切换">
+        <button type="button" data-mode="maintenance_locked">
+          <strong>维护锁定</strong><span>停止两套 PXE 服务</span>
+        </button>
+        <button type="button" data-mode="diskless_stage1">
+          <strong>无盘抓配</strong><span>Stage1 独占 DHCP/TFTP</span>
+        </button>
+        <button type="button" data-mode="maas_provision">
+          <strong>MAAS PXE</strong><span>MAAS 独占 DHCP/TFTP</span>
+        </button>
+      </div>
+      <div id="modeChecks" class="mode-checks"></div>
+    </section>
+
+    <section id="pipeline" class="panel flush">
+      <div class="panel-head padded">
+        <div>
+          <h2>整体交付流程</h2>
+          <p>每个节点按规划、BMC 配置、抓配合并、MAAS 纳管、存储和部署状态逐级推进。</p>
+        </div>
+        <span id="pipelineBadge" class="badge">pipeline</span>
+      </div>
+      <div id="pipelineSteps" class="pipeline-steps"></div>
+    </section>
+
+    <section id="operations" class="ops-grid workflow-actions">
+      <div class="panel action-panel" data-action-group="prepare">
+        <div class="panel-head">
+          <h2>准备与服务</h2>
+          <span class="badge">01</span>
+        </div>
+        <p class="action-panel-copy">控制面长期保留；按钮可用于首次安装、修复或重新部署。执行时会临时进入维护锁定，完成后恢复原 PXE 模式。</p>
+        <div class="action-grid">
+          <button type="button" data-action="validate-sources">校验离线资源</button>
+          <button type="button" data-action="network-check">检查网络连通</button>
+          <button type="button" data-action="install-maas">安装/修复 MAAS 服务端</button>
+          <button type="button" data-action="install-diskless">安装/修复无盘服务</button>
+        </div>
+      </div>
+      <div class="panel action-panel" data-action-group="stage1">
+        <div class="panel-head">
+          <h2>无盘抓配</h2>
+          <span class="badge">02</span>
+        </div>
+        <p class="action-panel-copy">可随时追加新节点或让指定节点重新抓配；不会要求已部署节点退回同一阶段。</p>
+        <div class="action-grid">
+          <button type="button" data-action="sync-lab-stage1">同步节点规划</button>
+          <button type="button" data-action="reset-stage1-state">清除全部 Stage1 上报</button>
+          <button type="button" data-action="export-stage1">生成 MAAS 导入表</button>
+        </div>
+        <p id="resetStage1Hint" class="action-gate-hint">仅用于全量重新抓配：删除采集结果，不删除节点规划或 MAAS 节点。</p>
+      </div>
+      <div class="panel action-panel" data-action-group="maas" id="pxe">
+        <div class="panel-head">
+          <h2>MAAS 交付</h2>
+          <span class="badge">03</span>
+        </div>
+        <p class="action-panel-copy">恢复硬盘并切到 MAAS PXE 后，按纳管、盘点、清盘、存储、部署顺序推进。</p>
+        <div class="action-grid">
+          <button type="button" data-mode="maas_provision">切换到 MAAS PXE</button>
+          <button type="button" data-action="import-nodes">导入 Stage1 就绪节点</button>
+          <button type="button" data-action="wipe-ready">批量清盘并创建 RAID</button>
+          <button type="button" data-action="apply-storage-ready">批量套存储策略</button>
+          <button type="button" data-action="deploy-ready">批量部署</button>
+        </div>
+        <p id="importNodesHint" class="action-gate-hint"></p>
+      </div>
+      <div class="panel action-panel action-console">
+        <div class="panel-head">
+          <h2>当前执行</h2>
+          <span id="actionBadge" class="badge">ready</span>
+        </div>
+        <p id="actionHint" class="action-panel-copy">选择与当前阶段匹配的操作。</p>
+        <pre id="flowOutput">等待操作</pre>
+      </div>
+    </section>
+
+    <section class="workbench-grid">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>关注项</h2>
+            <p>优先处理阻塞节点和失败阶段。</p>
+          </div>
+          <span id="attentionBadge" class="badge">0 open</span>
+        </div>
+        <div id="attentionList" class="work-list"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>最近活动</h2>
+            <p>按节点状态更新时间排序。</p>
+          </div>
+          <span class="badge">activity</span>
+        </div>
+        <div id="activityList" class="work-list"></div>
+      </div>
+    </section>
+
+    <section class="grid status-grid" id="health">
+      <div class="panel">
+        <div class="panel-head"><h2>实验室</h2><span id="labName" class="badge">lab</span></div>
+        <div id="labInfo" class="status-list"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>服务状态</h2></div>
+        <div id="services" class="status-list compact-list"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>离线资源</h2></div>
+        <div id="sources" class="status-list compact-list"></div>
+      </div>
+    </section>
+
+    <section class="grid output-grid">
+      <div class="panel">
+        <div class="panel-head"><h2>模式切换记录</h2></div>
+        <pre id="actionOutput"></pre>
+      </div>
+    </section>
+
+    <section id="nodes" class="panel wide">
+      <div class="panel-head padded">
+        <div>
+          <h2>节点状态</h2>
+          <p id="selectionSummary">未选择节点</p>
+        </div>
+        <div class="node-toolbar">
+          <select id="statusFilter" aria-label="按状态筛选节点" title="按状态筛选节点">
+            <option value="">全部状态</option>
+          </select>
+          <select id="phaseFilter" aria-label="按阶段筛选节点" title="按阶段筛选节点">
+            <option value="">全部阶段</option>
+          </select>
+          <input id="filterInput" placeholder="过滤 SN / BMC / MAC / 状态">
+          <button id="selectVisibleBtn" type="button">全选当前结果</button>
+          <button id="clearSelectionBtn" type="button">清空选择</button>
+        </div>
+      </div>
+      <div class="bulk-bar">
+        <button id="rebootSelectedBtn" type="button">批量重启</button>
+        <button id="recommissionSelectedBtn" type="button">重新盘点硬件</button>
+        <button id="deleteSelectedBtn" type="button">删除选中节点</button>
+        <button id="wipeSelectedBtn" type="button">清盘并创建 RAID</button>
+        <button id="storageSelectedBtn" type="button">套存储策略</button>
+        <button id="deploySelectedBtn" type="button">部署选中节点</button>
+      </div>
+      <div class="table-wrap">
+        <table class="node-table">
+          <thead><tr id="nodeHead"></tr></thead>
+          <tbody id="nodeBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="automation" class="automation-page">
+      <div class="automation-head">
+        <div>
+          <div class="eyebrow">Post deployment automation</div>
+          <h2>Ansible 自动化与节点验收</h2>
+        </div>
+        <div class="automation-runtime">
+          <span id="ansibleRuntime" class="badge">Ansible loading</span>
+          <span id="paramikoRuntime" class="badge">SSH loading</span>
+        </div>
+      </div>
+
+      <div class="automation-grid">
+        <section class="panel automation-control">
+          <div class="panel-head">
+            <h2>剧本包</h2>
+            <span id="bundleRepository" class="badge">repository</span>
+          </div>
+          <div class="bundle-upload">
+            <input id="bundleFile" type="file" accept=".tgz,.gz,application/gzip">
+            <button id="uploadBundleBtn" type="button">上传剧本包</button>
+          </div>
+          <div id="bundleList" class="bundle-list"></div>
+        </section>
+
+        <section class="panel automation-control">
+          <div class="panel-head">
+            <h2>执行控制</h2>
+            <span id="automationSelection" class="badge">0 nodes</span>
+          </div>
+          <label class="config-label" for="automationBundle">剧本包</label>
+          <select id="automationBundle"></select>
+          <label class="config-label">目标节点</label>
+          <p class="field-help">未选择节点时，默认执行全部已部署且通过网络与 SSH 门禁的节点。</p>
+          <div id="automationTargets" class="automation-targets"></div>
+          <div class="automation-actions">
+            <button id="runAnsibleBtn" type="button" class="primary">执行剧本</button>
+            <button id="checkAnsibleBtn" type="button">检查模式</button>
+            <button id="runComplianceBtn" type="button">项目自定义检查</button>
+            <button id="rerunConnectivityBtn" type="button">重测网络/SSH</button>
+          </div>
+          <pre id="automationOutput">等待操作</pre>
+        </section>
+      </div>
+
+      <section class="panel flush">
+        <div class="panel-head padded">
+          <h2>任务记录</h2>
+          <button id="refreshAutomationBtn" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table class="job-table">
+            <thead><tr><th>任务</th><th>类型</th><th>剧本包</th><th>节点</th><th>状态</th><th>时间</th></tr></thead>
+            <tbody id="automationJobs"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="config" class="config-page">
+      <div class="config-hero">
+        <div>
+          <div class="eyebrow">Configuration workspace</div>
+          <h2>配置管理</h2>
+          <p>集中维护服务端、PXE/DHCP、节点清单、BMC 和 RAID/部署策略；保存后再执行同步或批量流程。</p>
+        </div>
+        <div class="config-hero-actions">
+          <span id="configPath" class="badge">loading</span>
+          <span id="configStatus" class="badge">idle</span>
+          <button id="reloadConfigBtn" type="button">重新加载</button>
+          <button id="saveConfigBtn" type="button" class="primary">保存配置</button>
+        </div>
+      </div>
+
+      <div id="configSummary" class="config-summary"></div>
+
+      <div class="config-shell">
+        <aside class="config-nav" aria-label="配置分组">
+          <button type="button" class="active" data-config-tab="server">
+            <strong>服务端</strong>
+            <span>MAAS、HTTP、账号</span>
+          </button>
+          <button type="button" data-config-tab="network">
+            <strong>网络与 PXE</strong>
+            <span>DHCP、Stage1、启动文件</span>
+          </button>
+          <button type="button" data-config-tab="inventory">
+            <strong>节点清单</strong>
+            <span>CSV、clients、BMC</span>
+          </button>
+          <button type="button" data-config-tab="policy">
+            <strong>策略</strong>
+            <span>流程默认、BMC、RAID</span>
+          </button>
+          <button type="button" data-config-tab="review">
+            <strong>预览校验</strong>
+            <span>生效配置、问题检查</span>
+          </button>
+        </aside>
+
+        <form id="configForm" class="config-workspace">
+          <section class="config-tab active" data-config-pane="server">
+            <div class="section-title">
+              <div>
+                <h3>服务端基础</h3>
+                <p>控制 MAAS 服务端、离线资源、HTTP 服务和管理账号。</p>
+              </div>
+            </div>
+            <div class="config-section-card">
+              <div id="configBasicFields" class="config-fields"></div>
+            </div>
+            <div class="config-section-card">
+              <div id="configServerCoreFields" class="config-fields"></div>
+            </div>
+            <div class="config-section-card">
+              <div id="configServerAccessFields" class="config-fields"></div>
+            </div>
+          </section>
+
+          <section class="config-tab" data-config-pane="network">
+            <div class="section-title">
+              <div>
+                <h3>网络与 PXE</h3>
+                <p>这里决定分时独占模式下 MAAS 与无盘抓配服务如何接管 DHCP/TFTP。</p>
+              </div>
+              <button id="syncWipeTemplateBtn" type="button">同步清盘脚本</button>
+            </div>
+            <div class="config-section-card">
+              <div id="configNetworkFields" class="config-fields"></div>
+            </div>
+            <div class="config-hint-grid">
+              <div>
+                <strong>无盘抓配模式</strong>
+                <span>切到 Stage1 后，目标节点 PXE 拉起无盘环境并上报 SN、BMC、网口信息。</span>
+              </div>
+              <div>
+                <strong>MAAS 部署模式</strong>
+                <span>抓配完成后切回 MAAS，由 MAAS commissioning、部署和电源控制接管。</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="config-tab" data-config-pane="inventory">
+            <div class="section-title">
+              <div>
+                <h3>节点清单</h3>
+                <p>CSV 用于正式批量录入，JSON 用于兼容静态清单和额外 BMC 资源。</p>
+              </div>
+            </div>
+            <div class="config-editor-grid">
+              <div class="config-section-card">
+                <label class="config-label" for="configUploadedCsv">inventory.uploaded_csv</label>
+                <textarea id="configUploadedCsv" rows="18" spellcheck="false" placeholder="hostname,bmc_ip,bmc_user,bmc_pass,sn,25g,tag&#10;node-GPU-201,&quot;192.168.2.139/24,192.168.2.1&quot;,bmc-user,CHANGE_ME,EXAMPLE-SN,&quot;10.0.0.11/24,10.0.0.1&quot;,cpu"></textarea>
+                <div class="config-help">这里填写目标规划，不要求知道 BMC 当前地址或旧账号。Stage1 会通过本机 IPMI/KCS 写入或复用目标配置，再以实际回读结果合并 PXE MAC 和硬件信息。</div>
+              </div>
+              <div class="config-section-card">
+                <label class="config-label" for="configClients">clients JSON</label>
+                <textarea id="configClients" rows="18" spellcheck="false"></textarea>
+                <div class="config-help">用于兼容旧配置或补充静态字段；与上传清单合成时，上传清单优先。</div>
+                <details>
+                  <summary>默认 clients</summary>
+                  <pre id="configClientsDefault"></pre>
+                </details>
+              </div>
+              <div class="config-section-card">
+                <label class="config-label" for="configKnownBmcs">known_bmcs JSON</label>
+                <textarea id="configKnownBmcs" rows="12" spellcheck="false"></textarea>
+                <div class="config-help">保存额外 BMC 设备清单，支持 name、bmc_ip、bmc_user、bmc_pass。</div>
+                <details>
+                  <summary>默认 known_bmcs</summary>
+                  <pre id="configBmcsDefault"></pre>
+                </details>
+              </div>
+            </div>
+          </section>
+
+          <section class="config-tab" data-config-pane="policy">
+            <div class="section-title">
+              <div>
+                <h3>流程与存储策略</h3>
+                <p>定义默认标签、电源驱动、部署策略和 RAID 创建规则。</p>
+              </div>
+              <button id="defaultsConfigBtn" type="button">恢复默认值到表单</button>
+            </div>
+            <div class="config-section-card">
+              <div id="configConsoleFields" class="config-fields"></div>
+            </div>
+            <div class="config-section-card">
+              <div id="configDefaultsFields" class="config-fields"></div>
+            </div>
+            <div class="config-section-card">
+              <div id="configRaidFields" class="config-fields"></div>
+            </div>
+            <div class="config-section-card">
+              <label class="config-label" for="configNodeTypes">node_types JSON</label>
+              <textarea id="configNodeTypes" rows="16" spellcheck="false"></textarea>
+              <div class="config-help">配置 default/gpu/cpu 的网络和 RAID 规则，按 tag 匹配后回落到 default。</div>
+              <details>
+                <summary>默认 node_types</summary>
+                <pre id="configNodeTypesDefault"></pre>
+              </details>
+            </div>
+            <div class="config-editor-grid policy-file-editors">
+              <div class="config-section-card">
+                <label class="config-label" for="configDeployPolicy">deploy-policy.yaml</label>
+                <textarea id="configDeployPolicy" rows="24" spellcheck="false"></textarea>
+                <div class="config-help">部署策略：按 tag 选择节点类型，控制 MAAS 分区、文件系统和网络；仅在策略中显式配置时覆盖默认账户。</div>
+                <div id="configDeployPolicyPath" class="config-file-path"></div>
+              </div>
+              <div class="config-section-card">
+                <label class="config-label" for="configDefaultUserData">default-user-data.yaml</label>
+                <textarea id="configDefaultUserData" rows="24" spellcheck="false"></textarea>
+                <div class="config-help">默认系统账户与 cloud-init 基线：统一配置 ubuntu/root 用户、密码、sudo、SSH 登录及通用首启设置，每次部署都会使用。</div>
+                <div id="configDefaultUserDataPath" class="config-file-path"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="config-tab" data-config-pane="review">
+            <div class="section-title">
+              <div>
+                <h3>生效配置与校验</h3>
+                <p>保存前检查派生值、配置错误和最终 JSON。</p>
+              </div>
+            </div>
+            <div class="config-review-grid">
+              <div class="config-section-card">
+                <h3>派生值</h3>
+                <div id="configDerived" class="status-list"></div>
+              </div>
+              <div class="config-section-card">
+                <h3>校验结果</h3>
+                <pre id="configValidation"></pre>
+              </div>
+              <div class="config-section-card wide-review">
+                <h3>完整预览</h3>
+                <pre id="configPreview"></pre>
+              </div>
+            </div>
+          </section>
+        </form>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

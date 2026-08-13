@@ -1,0 +1,14 @@
+[Unit]
+Description=MAAS Stage1 diskless DHCP/TFTP service
+After=network-online.target
+Wants=network-online.target
+Conflicts=maas-dhcpd.service isc-dhcp-server.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/maas-offline/diskless-stage1-dnsmasq.conf
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

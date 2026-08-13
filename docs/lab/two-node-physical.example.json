@@ -1,0 +1,40 @@
+{
+  "lab_name": "two-node-physical",
+  "server": {
+    "hostname": "maas-server-1",
+    "role": "server",
+    "external_ip": "192.168.2.200",
+    "stage1_server_ip": "",
+    "maas_url": "http://192.168.2.200:5240/MAAS",
+    "offline_root": "/srv/maas-offline",
+    "http_port": 8083,
+    "stage1_port": 8091,
+    "admin_user": "admin",
+    "admin_password": "CHANGE_ME",
+    "dhcp_interface": "",
+    "dhcp_range": "",
+    "dhcp_router": "192.168.2.1",
+    "dhcp_dns": "192.168.2.1"
+  },
+  "clients": [
+    {
+      "hostname": "node-physical-2",
+      "role": "client",
+      "external_ip": "192.168.2.201",
+      "bmc_ip": "192.168.2.139",
+      "bmc_user": "root",
+      "bmc_pass": "CHANGE_ME",
+      "sn": "",
+      "pxe_mac": "",
+      "tag": "physical-test,no-gpu"
+    }
+  ],
+  "known_bmcs": [
+    {
+      "name": "server-bmc",
+      "bmc_ip": "192.168.2.150",
+      "bmc_user": "root",
+      "bmc_pass": "CHANGE_ME"
+    }
+  ]
+}

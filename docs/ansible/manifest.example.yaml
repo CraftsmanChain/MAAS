@@ -1,0 +1,16 @@
+id: cluster-baseline
+name: Cluster baseline
+version: "1.0.0"
+description: Post-deployment system configuration
+playbook: site.yml
+checks:
+  - id: cpu_governor
+    label: CPU performance mode
+    command: cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+    operator: equals
+    expected: performance
+  - id: docker_version
+    label: Docker 26.1.4
+    command: docker version --format '{{.Server.Version}}'
+    operator: equals
+    expected: 26.1.4

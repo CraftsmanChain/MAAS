@@ -105,27 +105,45 @@ def set_layout(profile, sysid, dev_id, efi_size_bytes, boot_size_bytes, root_siz
 
 def pick_boot_device_id(profile, sysid):
     devices = maas_json(profile, "block-devices", "read", sysid)
-    physical = [dev for dev in devices if dev.get("type") == "physical"]
-    if not physical:
-        raise SystemExit(f"no physical block device found for {sysid}")
+    candidates = []
+    for dev in devices:
+        dev_type = str(dev.get("type") or "").lower()
+        size = dev.get("size") or 0
+        if dev_type not in {"physical", "virtual"}:
+            continue
+        if not size:
+            continue
+        candidates.append(dev)
+    if not candidates:
+        raise SystemExit(
+            f"no deployable block device found for {sysid}; "
+            "MAAS inventory is empty, recommission the machine after RAID changes and retry"
+        )
 
     def rank(dev):
         name = (dev.get("name") or "").lower()
         model = (dev.get("model") or "").lower()
+        serial = (dev.get("serial") or "").lower()
+        dev_type = (dev.get("type") or "").lower()
+        used_for = (dev.get("used_for") or "").lower()
         size = dev.get("size") or 0
         is_nvme = name.startswith("nvme")
-        is_sda = name == "sda"
-        looks_ssd = ("ssd" in model) or ("mr9560" in model) or (name.startswith("sd") and not is_nvme)
+        is_primary_name = name in {"sda", "vda"} or name.startswith("md")
+        looks_raid = any(token in f"{model} {serial}" for token in ("raid", "megaraid", "perc", "mr", "volume"))
+        looks_ssd = ("ssd" in model) or ("ssd" in serial) or ("mr9560" in model) or (name.startswith("sd") and not is_nvme)
         return (
-            0 if is_sda else 1,
+            0 if is_primary_name else 1,
+            0 if dev_type == "virtual" else 1,
+            0 if looks_raid else 1,
+            0 if "unused" in used_for or not used_for else 1,
             0 if looks_ssd and not is_nvme else 1,
             0 if not is_nvme else 1,
-            size,
+            -int(size),
             name,
         )
 
-    physical.sort(key=rank)
-    return physical[0]["id"]
+    candidates.sort(key=rank)
+    return candidates[0]["id"]
 
 
 def ensure_data_partition(profile, sysid, dev_id, mount_point):

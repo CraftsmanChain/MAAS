@@ -1,0 +1,7 @@
+Cmnd_Alias MAAS_CONSOLE_CONTROL = \
+  /opt/maas-offline-toolkit/docs/scripts/maas_pxe_mode.sh *, \
+  /opt/maas-offline-toolkit/docs/scripts/maas_install_curtin_login_template.py *, \
+  /opt/maas-offline-toolkit/docs/maas-control-plane-oneclick.sh *, \
+  /opt/maas-offline-toolkit/docs/diskless-stage1-oneclick.sh *
+
+ubuntu ALL=(root) NOPASSWD: MAAS_CONSOLE_CONTROL

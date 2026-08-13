@@ -1,0 +1,11 @@
+id: connectivity-check
+name: Connectivity check
+version: "1.0.0"
+description: Read-only Ansible connectivity validation
+playbook: site.yml
+checks:
+  - id: cloud_init
+    label: cloud-init completed
+    command: cloud-init status --wait --long | head -1
+    operator: contains
+    expected: "status: done"

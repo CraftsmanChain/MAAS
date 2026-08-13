@@ -70,6 +70,40 @@
 - 已支持“MAAS 控制端初始化完成后的条件式一键离线交付”
 - 暂未支持“从裸机到 MAAS 控制端完全自动化”的一键拉起
 
+### 0.4 PXE 控制面与 Web 控制台规划
+
+当前阶段先采用“分时独占”策略管理无盘采集环境与 MAAS 装机环境：
+
+- 同一个二层广播域内，同一批 PXE 客户端不同时接受无盘 DHCP/TFTP 和 MAAS DHCP/TFTP
+- 阶段 1 无盘采集时，启用无盘 DHCP/TFTP/HTTP，停用 MAAS 对目标网段的 PXE 引导
+- 阶段 1 完成并导出 `maas.csv` 后，停用无盘 DHCP/TFTP，再启用 MAAS DHCP/TFTP/PXE
+- 已部署机器保持本地盘优先启动，除非现场明确设置一次性 PXE Boot
+
+这样做的目标是避免 DHCP 抢答、TFTP 入口混乱、节点进错启动环境，以及 MAAS 产生半成品发现记录。
+
+后续计划增加 Web 控制台作为统一操作面，覆盖：
+
+- 集群总览、节点状态、异常统计、批量任务
+- 阶段 1 无盘采集与 BMC 配置状态
+- 分时独占服务模式切换
+- MAAS 纳管、清盘、套盘、部署编排
+- 排障原因聚合和操作审计
+
+设计草案见 [MAAS_Web_Console_Design.md](./MAAS_Web_Console_Design.md)。
+
+端到端推进计划见 [MAAS_End_to_End_Execution_Plan.md](./MAAS_End_to_End_Execution_Plan.md)。
+
+Stage1 手动测试见 [stage1/Stage1_Diskless_Manual_Test.md](./stage1/Stage1_Diskless_Manual_Test.md)。
+
+当前可用脚本入口：
+
+- MAAS 控制端一键部署：[maas-control-plane-oneclick.sh](./maas-control-plane-oneclick.sh)
+- 无盘 Stage1 一键部署：[diskless-stage1-oneclick.sh](./diskless-stage1-oneclick.sh)
+- PXE 分时独占模式切换：[scripts/maas_pxe_mode.sh](./scripts/maas_pxe_mode.sh)
+- 本地 smoke 验证：[scripts/offline_deploy_smoke_test.sh](./scripts/offline_deploy_smoke_test.sh)
+
+Docker 验证说明见 [docker/README.md](./docker/README.md)。
+
 ## 1. 离线资源服务（单服务 + 单端口 + 单根目录）
 
 ### 1.1 目录规划（示例）
@@ -91,6 +125,8 @@
 - `http://10.161.139.136:8083/mirror/` → `/srv/maas-offline/mirror`
 - `http://10.161.139.136:8083/iso/` → `/srv/maas-offline/iso`
 - `http://10.161.139.136:8083/tools/` → `/srv/maas-offline/tools`
+- `http://10.161.139.136:8083/diskless/` → `/srv/maas-offline/diskless`
+- `http://10.161.139.136:8083/stage1/` → `/srv/maas-offline/stage1`
 - `http://10.161.139.136:8083/tools/lldpd-mini-repo/` → `/srv/maas-offline/tools/lldpd-mini-repo`
 
 ### 1.3 部署为 systemd 服务
@@ -98,7 +134,7 @@
 在 `10.161.139.136` 上执行：
 
 ```bash
-sudo mkdir -p /srv/maas-offline/{mirror,iso,tools}
+sudo mkdir -p /srv/maas-offline/{mirror,iso,tools,diskless,stage1}
 sudo mkdir -p /opt/maas-offline
 sudo cp ./docs/maas-offline-http.py /opt/maas-offline/maas-offline-http.py
 sudo chmod +x /opt/maas-offline/maas-offline-http.py
@@ -114,7 +150,7 @@ journalctl -u maas-offline-http.service -n 100 --no-pager
 如果你之前已经把资源分散放在旧目录，可以先归并到统一根目录：
 
 ```bash
-sudo mkdir -p /srv/maas-offline/{mirror,iso,tools}
+sudo mkdir -p /srv/maas-offline/{mirror,iso,tools,diskless,stage1}
 sudo rsync -a /srv/maas-mirror/ /srv/maas-offline/mirror/
 sudo rsync -a /root/ubuntu22.04.4/ /srv/maas-offline/iso/
 sudo rsync -a /root/tools/ /srv/maas-offline/tools/
@@ -130,7 +166,7 @@ chmod +x ./docs/maas-offline-oneclick.sh
 
 该脚本会做这些事：
 
-- 统一使用 `/srv/maas-offline/{mirror,iso,tools}`
+- 统一使用 `/srv/maas-offline/{mirror,iso,tools,diskless,stage1}`
 - 自动从旧目录 `/srv/maas-mirror`、`/root/ubuntu22.04.4`、`/root/tools` 迁移文件
 - 自动把 `lldpd` 离线仓库归并到 `/srv/maas-offline/tools/lldpd-mini-repo`
 - 停掉旧的 `python3 -m http.server 8081/8082/8083/8899`
@@ -143,6 +179,8 @@ chmod +x ./docs/maas-offline-oneclick.sh
 curl -I http://10.161.139.136:8083/mirror/
 curl -I http://10.161.139.136:8083/iso/
 curl -I http://10.161.139.136:8083/tools/
+curl -I http://10.161.139.136:8083/diskless/
+curl -I http://10.161.139.136:8083/stage1/
 ```
 
 进一步确认 systemd 实际映射目录：
@@ -155,7 +193,7 @@ systemctl status maas-offline-http --no-pager
 `ExecStart` 必须是：
 
 ```text
-/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-offline/mirror --map /iso=/srv/maas-offline/iso --map /tools=/srv/maas-offline/tools
+/usr/bin/python3 /opt/maas-offline/maas-offline-http.py --bind 0.0.0.0 --port 8083 --map /mirror=/srv/maas-offline/mirror --map /iso=/srv/maas-offline/iso --map /tools=/srv/maas-offline/tools --map /diskless=/srv/maas-offline/diskless --map /stage1=/srv/maas-offline/stage1
 ```
 
 如果之前 MAAS boot-source 还指向旧地址 `8081`，要同步改成：
@@ -429,6 +467,108 @@ PROFILE=admin SERIES=jammy ./docs/scripts/maas_deploy_batch.sh \
   --all-ready --include-failed-deployment
 ```
 
+### 1.7 MAAS 控制端一键入口
+
+如果要把控制端离线安装、初始化和资源配置合并成一个入口，使用：
+
+```bash
+./docs/maas-control-plane-oneclick.sh \
+  --server-ip <server-ip> \
+  --admin-password '<password>'
+```
+
+该脚本默认执行：
+
+- 拉起统一离线 HTTP 服务
+- 检查 Ubuntu 22.04 / Jammy 节点部署所需资源
+- 写入离线 apt 源
+- 安装 `maas-region-api`、`maas-rack-controller`、`maas-cli`、`cloud-init`、`curtin-common`、`python3-yaml`
+- 执行 `maas init region+rack`
+- 创建 admin 用户并登录 MAAS CLI profile
+- 配置 `boot-source`
+- 配置 `main_archive` 和 `lldpd-mini-repo`
+- 触发 boot resources import
+
+本地或容器里先做非破坏性验证：
+
+```bash
+./docs/maas-control-plane-oneclick.sh \
+  --dry-run \
+  --server-ip 127.0.0.1 \
+  --admin-password SmokeTest123
+```
+
+如果现场已经完成某些步骤，可以用 `--skip-*` 跳过，例如：
+
+```bash
+./docs/maas-control-plane-oneclick.sh \
+  --server-ip <server-ip> \
+  --admin-password '<password>' \
+  --skip-init \
+  --skip-admin
+```
+
+### 1.8 无盘 Stage1 一键入口
+
+无盘采集服务使用：
+
+```bash
+./docs/diskless-stage1-oneclick.sh \
+  --server-ip <server-ip>
+```
+
+默认行为：
+
+- 准备 `/srv/maas-offline/diskless/ubuntu-22.04`
+- 准备 `/srv/maas-offline/stage1`
+- 安装并启动 `stage1-collector.service`
+- 复用统一 HTTP 服务暴露 `/diskless/` 和 `/stage1/`
+- 不启用 DHCP/TFTP
+
+如果确认当前网段已经切到 `diskless_stage1` 模式，并且 MAAS PXE 已停用，再显式开启无盘 DHCP/TFTP：
+
+```bash
+./docs/diskless-stage1-oneclick.sh \
+  --server-ip <server-ip> \
+  --enable-dhcp \
+  --dhcp-interface <iface> \
+  --dhcp-range <start-ip>,<end-ip>,12h \
+  --dhcp-router <gateway-ip> \
+  --dhcp-dns <dns-ip>
+```
+
+UEFI 机器默认建议使用 `ipxe.efi` 作为 Stage1 的 UEFI iPXE 源文件；部分服务器在 `snponly.efi` / `SnpDxe.efi` 链路上会直接在固件里崩溃。若现场需要显式指定，可追加：
+
+```bash
+  --uefi-ipxe-source ipxe.efi
+```
+
+PXE 分时独占模式切换：
+
+```bash
+./docs/scripts/maas_pxe_mode.sh diskless_stage1
+./docs/scripts/maas_pxe_mode.sh maas_provision
+./docs/scripts/maas_pxe_mode.sh maintenance_locked
+./docs/scripts/maas_pxe_mode.sh status
+```
+
+如需在切换前单独检查无盘抓配资源是否完整，可执行：
+
+```bash
+./docs/scripts/validate_stage1_pxe.sh \
+  --offline-root /srv/maas-offline \
+  --http-port 8083 \
+  --stage1-port 8091
+```
+
+该检查会验证 `diskless/ubuntu-22.04`、`diskless/tftp`、`stage1`、`ipxe.efi`、`undionly.kpxe`、`stage1.ipxe`、dnsmasq 配置和 collector 环境文件；缺项时直接失败，避免节点再次卡在 `tftp://<server>/ipxe.efi` 超时。
+
+本地 smoke 验证：
+
+```bash
+./docs/scripts/offline_deploy_smoke_test.sh
+```
+
 ## 2. MAAS 纳管（节点批量录入/发现/标签/分组）
 
 ### 2.1 两种纳管模式
@@ -495,9 +635,11 @@ PROFILE=admin ./docs/scripts/maas_bulk_import_and_tag.sh ./nodes.csv
 - 如果离线仓库里缺 `lldpd`，会直接触发：
   - `20-maas-01-install-lldpd failed installing dependencies`
   - `maas-capture-lldpd failed`
+- 控制节点还必须安装 `nsupdate`（由 `dnsutils`/`bind9-dnsutils` 提供）。缺失时 `maas-regiond` 会反复报 `FileNotFoundError: nsupdate` / `Failed configuring DNS`，需要先补齐离线 control repo 后重新执行控制面安装。
 - `commissioning_scripts=none` 也不会跳过 MAAS 默认内建 commissioning 脚本
 - MAAS 默认脚本不能通过 `node-script update ... script@=...` 直接改成 `skip/no-op`；CLI 会返回 `Not allowed to change on default scripts.`
 - 将“清盘/清 RAID”作为 `testing` 脚本执行，可规避 commissioning 默认脚本链路
+- Web 控制台流程是分段门禁：`Failed commissioning` 只能先重扫；节点进入 `Ready` 后才能执行“清盘/创建 RAID”；清盘后需要 MAAS 再次盘点到新的块设备，然后执行“套存储策略”。
 - `inspect-installed-system-test` 已从本地仓库移除，不再作为标准测试链路的一部分；当前保留的标准 testing 脚本只有 `wipe-raid-and-disks-test`
 
 ### 3.2 清盘脚本（默认策略）
@@ -842,7 +984,7 @@ CSV 示例：
 
 ```csv
 hostname,pxe_mac,bmc_ip,bmc_user,bmc_pass,node_id,sn,25g,25g_mode,tag
-node-GPU-135,ea:bd:e7:57:f3:81,10.161.239.135,nxdx,Nxdx@1234,1,210235A3VWH233000246,"10.161.139.135/24,10.161.139.254","mode=802.3ad miimon=100 xmit_hash_policy=layer3+4",A800
+node-GPU-135,ea:bd:e7:57:f3:81,10.161.239.135,bmc-user,CHANGE_ME,1,EXAMPLE-SN,"10.161.139.135/24,10.161.139.254","mode=802.3ad miimon=100 xmit_hash_policy=layer3+4",A800
 ```
 
 CSV 字段说明：

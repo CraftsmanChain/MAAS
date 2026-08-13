@@ -7,6 +7,8 @@ OFFLINE_ROOT=/srv/maas-offline
 MIRROR_DIR="${OFFLINE_ROOT}/mirror"
 ISO_DIR="${OFFLINE_ROOT}/iso"
 TOOLS_DIR="${OFFLINE_ROOT}/tools"
+DISKLESS_DIR="${OFFLINE_ROOT}/diskless"
+STAGE1_DIR="${OFFLINE_ROOT}/stage1"
 LLDPD_REPO_DIR="${TOOLS_DIR}/lldpd-mini-repo"
 LEGACY_MIRROR_DIR=/srv/maas-mirror
 LEGACY_ISO_DIR=/root/ubuntu22.04.4
@@ -50,7 +52,7 @@ repair_lowlatency_boot_artifacts() {
 }
 
 sudo mkdir -p "$SCRIPT_DST_DIR"
-sudo mkdir -p "$MIRROR_DIR" "$ISO_DIR" "$TOOLS_DIR" "$LLDPD_REPO_DIR"
+sudo mkdir -p "$MIRROR_DIR" "$ISO_DIR" "$TOOLS_DIR" "$DISKLESS_DIR" "$STAGE1_DIR" "$LLDPD_REPO_DIR"
 sync_dir_if_exists "$LEGACY_MIRROR_DIR" "$MIRROR_DIR"
 sync_dir_if_exists "$LEGACY_ISO_DIR" "$ISO_DIR"
 sync_dir_if_exists "$LEGACY_TOOLS_DIR" "$TOOLS_DIR"
@@ -83,6 +85,8 @@ urls:
   http://<server-ip>:${PORT}/mirror/
   http://<server-ip>:${PORT}/iso/
   http://<server-ip>:${PORT}/tools/
+  http://<server-ip>:${PORT}/diskless/
+  http://<server-ip>:${PORT}/stage1/
   http://<server-ip>:${PORT}/tools/lldpd-mini-repo/
 
 maas_package_repo_examples:

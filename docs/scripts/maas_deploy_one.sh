@@ -3,6 +3,7 @@
 set -euo pipefail
 
 PROFILE="${PROFILE:-admin}"
+OSYSTEM="${OSYSTEM:-ubuntu}"
 SERIES="${SERIES:-jammy}"
 SYSID="${1:?usage: $0 system_id [policy-name|user-data.yaml]}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,13 +16,13 @@ DEPLOY_CSV="${DEPLOY_CSV:-}"
 # Backward compatible mode: if a file path is passed, deploy the raw cloud-init file directly.
 if [ -n "$SECOND_ARG" ] && [ -f "$SECOND_ARG" ]; then
   USER_DATA_B64="$(base64 -w0 "$SECOND_ARG")"
-  maas "$PROFILE" machine deploy "$SYSID" distro_series="$SERIES" user_data="$USER_DATA_B64"
+  maas "$PROFILE" machine deploy "$SYSID" osystem="$OSYSTEM" distro_series="$SERIES" user_data="$USER_DATA_B64"
   exit 0
 fi
 
 # Preferred mode: use the policy YAML and auto-match by machine tag.
 if [ -f "$POLICY_SCRIPT" ] && [ -f "$POLICY_CONFIG" ]; then
-  ARGS=(--profile "$PROFILE" --series "$SERIES" --config "$POLICY_CONFIG")
+  ARGS=(--profile "$PROFILE" --osystem "$OSYSTEM" --series "$SERIES" --config "$POLICY_CONFIG")
   if [ -n "$DEPLOY_CSV" ]; then
     ARGS+=(--csv "$DEPLOY_CSV")
   fi
@@ -42,7 +43,7 @@ if [ -f "$DEFAULT_USER_DATA" ]; then
   )"
   sed "s/__HOSTNAME__/${HOSTNAME}/g" "$DEFAULT_USER_DATA" > "$USER_DATA_FILE"
   USER_DATA_B64="$(base64 -w0 "$USER_DATA_FILE")"
-  maas "$PROFILE" machine deploy "$SYSID" distro_series="$SERIES" user_data="$USER_DATA_B64"
+  maas "$PROFILE" machine deploy "$SYSID" osystem="$OSYSTEM" distro_series="$SERIES" user_data="$USER_DATA_B64"
 else
-  maas "$PROFILE" machine deploy "$SYSID" distro_series="$SERIES"
+  maas "$PROFILE" machine deploy "$SYSID" osystem="$OSYSTEM" distro_series="$SERIES"
 fi

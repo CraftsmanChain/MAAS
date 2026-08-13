@@ -1,0 +1,99 @@
+#!ipxe
+
+set base-url ${base-url}
+set collector-url ${collector-url}
+set iso-url ${iso-url}
+set stage1-server ${server-ip}
+set nocloud-url ${base-url}/nocloud/
+
+echo MAAS Stage1 diskless boot
+echo base-url=${base-url}
+echo collector-url=${collector-url}
+echo iso-url=${iso-url}
+echo nocloud-url=${nocloud-url}
+
+:select_stage1_net
+isset ${net0/ip} && iseq ${net0/next-server} ${stage1-server} && goto use_net0 ||
+isset ${net1/ip} && iseq ${net1/next-server} ${stage1-server} && goto use_net1 ||
+isset ${net2/ip} && iseq ${net2/next-server} ${stage1-server} && goto use_net2 ||
+isset ${net3/ip} && iseq ${net3/next-server} ${stage1-server} && goto use_net3 ||
+isset ${net4/ip} && iseq ${net4/next-server} ${stage1-server} && goto use_net4 ||
+isset ${net5/ip} && iseq ${net5/next-server} ${stage1-server} && goto use_net5 ||
+isset ${net6/ip} && iseq ${net6/next-server} ${stage1-server} && goto use_net6 ||
+isset ${net7/ip} && iseq ${net7/next-server} ${stage1-server} && goto use_net7 ||
+echo No iPXE interface has next-server=${stage1-server}; falling back to the first configured interface
+isset ${net0/ip} && goto use_net0 ||
+isset ${net1/ip} && goto use_net1 ||
+isset ${net2/ip} && goto use_net2 ||
+isset ${net3/ip} && goto use_net3 ||
+isset ${net4/ip} && goto use_net4 ||
+isset ${net5/ip} && goto use_net5 ||
+isset ${net6/ip} && goto use_net6 ||
+isset ${net7/ip} && goto use_net7 ||
+echo No configured iPXE interface found
+shell
+
+:use_net0
+set boot-mac ${net0/mac:hexhyp}
+set boot-ip ${net0/ip}
+set boot-netmask ${net0/netmask}
+set boot-gateway ${net0/gateway}
+goto boot_stage1
+
+:use_net1
+set boot-mac ${net1/mac:hexhyp}
+set boot-ip ${net1/ip}
+set boot-netmask ${net1/netmask}
+set boot-gateway ${net1/gateway}
+goto boot_stage1
+
+:use_net2
+set boot-mac ${net2/mac:hexhyp}
+set boot-ip ${net2/ip}
+set boot-netmask ${net2/netmask}
+set boot-gateway ${net2/gateway}
+goto boot_stage1
+
+:use_net3
+set boot-mac ${net3/mac:hexhyp}
+set boot-ip ${net3/ip}
+set boot-netmask ${net3/netmask}
+set boot-gateway ${net3/gateway}
+goto boot_stage1
+
+:use_net4
+set boot-mac ${net4/mac:hexhyp}
+set boot-ip ${net4/ip}
+set boot-netmask ${net4/netmask}
+set boot-gateway ${net4/gateway}
+goto boot_stage1
+
+:use_net5
+set boot-mac ${net5/mac:hexhyp}
+set boot-ip ${net5/ip}
+set boot-netmask ${net5/netmask}
+set boot-gateway ${net5/gateway}
+goto boot_stage1
+
+:use_net6
+set boot-mac ${net6/mac:hexhyp}
+set boot-ip ${net6/ip}
+set boot-netmask ${net6/netmask}
+set boot-gateway ${net6/gateway}
+goto boot_stage1
+
+:use_net7
+set boot-mac ${net7/mac:hexhyp}
+set boot-ip ${net7/ip}
+set boot-netmask ${net7/netmask}
+set boot-gateway ${net7/gateway}
+goto boot_stage1
+
+:boot_stage1
+echo selected-stage1-mac=${boot-mac}
+echo selected-stage1-ip=${boot-ip}
+echo selected-stage1-netmask=${boot-netmask}
+echo selected-stage1-gateway=${boot-gateway}
+kernel ${base-url}/vmlinuz initrd=initrd root=/dev/ram0 ro BOOTIF=01-${boot-mac} ip=${boot-ip}:${stage1-server}:${boot-gateway}:${boot-netmask}::BOOTIF:none boot=casper netboot=url url=${iso-url} autoinstall ds=nocloud-net;s=${nocloud-url} stage1.collector=${collector-url}
+initrd --name initrd ${base-url}/initrd
+boot

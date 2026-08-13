@@ -1,0 +1,17 @@
+defaults:
+  node_id: "1"
+  bmc_user: bmc-user
+  bmc_pass: "CHANGE_ME"
+  bmc_user_candidates:
+    - bmc-user
+    - nxdx2
+    - nxdx3
+    - nxdx4
+    - nxdx5
+    - nxdx6
+    - nxdx7
+    - nxdx8
+    - nxdx9
+  tag: A800
+  25g: "10.161.139.135/24,10.161.139.254"
+  25g_mode: "mode=802.3ad miimon=100 xmit_hash_policy=layer3+4"

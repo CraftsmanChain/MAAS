@@ -1,0 +1,14 @@
+---
+- name: Validate managed node connectivity
+  hosts: all
+  gather_facts: true
+  become: false
+  tasks:
+    - name: Read node identity
+      ansible.builtin.command: hostnamectl --static
+      register: node_hostname
+      changed_when: false
+
+    - name: Report node identity
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} reports {{ node_hostname.stdout }}"

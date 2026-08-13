@@ -1,5 +1,6 @@
 defaults:
   profile: admin
+  osystem: ubuntu
   distro_series: jammy
   storage:
     efi_size: 2G
@@ -7,6 +8,8 @@ defaults:
     root_size: 200G
     data_mount: /data
   networking:
+    mode: bond25g
+    apply_on_first_boot: true
     predictable_interface_names: true
     predictable_interface_kernel_cmdline: "net.ifnames=1 biosdevname=0"
     bond25g:
@@ -18,62 +21,32 @@ defaults:
         mode: 802.3ad
         mii-monitor-interval: 100
         transmit-hash-policy: layer3+4
-  sudo_user:
-    name: ubuntu
-    gecos: Ubuntu Admin
-    groups:
-      - adm
-      - sudo
-    shell: /bin/bash
-    password: "Lexun@12#$"
-    sudo_nopasswd: true
-    ssh_authorized_keys: []
-  root:
-    enabled: true
-    password: "Lexun@12#$"
-  ssh:
-    password_authentication: true
-    permit_root_login: true
-    pubkey_authentication: true
-    allow_users:
-      - ubuntu
-      - root
-
+    single_nic:
+      interface_name: eno4
 policy_match_order:
   - h100
+  - cpu
   - gpu
   - default
-
 policies:
   default: {}
-
   gpu:
     match_tags:
       - gpu
       - a800
     storage:
       root_size: 200G
-    sudo_user:
-      name: gpuops
-      gecos: GPU Ops
-      password: "GpuOps@123"
-      sudo_nopasswd: true
-    ssh:
-      allow_users:
-        - gpuops
-        - root
-
+  cpu:
+    match_tags:
+      - cpu
+    networking:
+      mode: single_nic
+      single_nic:
+        interface_name: eno4
+    storage:
+      root_size: 200G
   h100:
     match_tags:
       - h100
     storage:
       root_size: 300G
-    sudo_user:
-      name: h100ops
-      gecos: H100 Ops
-      password: "H100Ops@123"
-      sudo_nopasswd: true
-    ssh:
-      allow_users:
-        - h100ops
-        - root

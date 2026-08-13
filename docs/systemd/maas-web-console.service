@@ -1,0 +1,18 @@
+[Unit]
+Description=MAAS offline web console
+After=network-online.target maas-http.service maas-regiond.service maas-rackd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/maas-offline/web-console.env
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/maas-offline-toolkit
+ExecStart=/usr/bin/python3 /opt/maas-offline-toolkit/web-console/server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
